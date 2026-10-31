@@ -1,0 +1,12 @@
+{
+  "oelg_config": "oelg_config.json",
+  "map_config": "../instantiation_config.json",
+  "output_dir": "../data/ins_figures/oelg_distance_fields",
+  "depth_decay": 0.5,
+  "display_scale_maximum_by_kind": {
+    "event": 300.0,
+    "factor": 500.0
+  },
+  "apply_geo_type_importance": false,
+  "geo_type_importance": null
+}

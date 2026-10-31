@@ -21,7 +21,7 @@ import pandas as pd
 llm = ChatOpenAI(temperature=1.0,
                  model="deepseek-chat",
                  openai_api_base="https://api.deepseek.com",
-                 openai_api_key="")
+                 openai_api_key="sk-184a85d7723a49dfbb7b2019c2f77e46")
 
 
 def geo_ner_re(text: str):
@@ -335,7 +335,7 @@ from tqdm import tqdm
 def is_geo_location_parallel(max_workers=15):
     """
     A multi-threaded version of is_geo_location. It batches API requests to the LLM
-    for location validation and subsequently updates the Neo4j database in the main thread.
+    for location instantiation_validation and subsequently updates the Neo4j database in the main thread.
     """
     geo_nodes = GeoObject.nodes.all()
     geos_location = []
@@ -552,7 +552,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 def _fetch_geo_info_worker(geo_name, geo_type, origin_text, is_location_known):
     """
     A worker function for multi-threading that handles LLM API requests for location
-    validation and geocoding without interacting directly with the database.
+    instantiation_validation and geocoding without interacting directly with the database.
     """
     print(f"[Thread-Start] 开始请求大模型/API 解析: {geo_name}")
     result = {

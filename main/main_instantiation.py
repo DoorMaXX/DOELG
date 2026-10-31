@@ -2,48 +2,42 @@ import argparse
 import os
 import sys
 import time
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, shape
 import concurrent.futures
+import json
 
-# Ensure correct package imports based on project structure
+
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
-# Import the existing modules directly to avoid code duplication
+
 import instantiation
 import mapping
 from ontology.neo4jmodel import Neo4jDatabaseConnector, GlobalDisasterEvent
 
 
-def run_instantiation(workers, logic_db, target_db):
-    """
-    Sets up the environment and executes the recursive instantiation pipeline
-    by invoking the existing functions from the instantiation module.
-    """
+def run_instantiation(workers, logic_db, target_db, events_path):
+    """Build and persist instance events from a logic database and input GeoJSON."""
     print(f"\n{'=' * 50}")
     print(f"🌲 [PHASE 1] Starting Graph Instantiation")
     print(f"{'=' * 50}")
     start_time = time.time()
 
-    # Override module globals to match CLI arguments
+    
     instantiation.logic_graph_database = logic_db
     instantiation.ins_graph_database = target_db
+    instantiation._EVENT_IMPACT_TYPE_CACHE.clear()
+    instantiation._RELATE_EVENT_CACHE.clear()
+    instantiation._OBSERVATION_TASK_CACHE.clear()
 
     print(f"Initializing connection to logic database: {logic_db}...")
-    neo_logic = Neo4jDatabaseConnector(logic_db)
+    instantiation.neo = Neo4jDatabaseConnector(logic_db)
 
-    # Pre-cache global events for the instantiation module
+    
     instantiation.ALL_EVENTS_CACHE = {e.event_description: e for e in GlobalDisasterEvent.nodes.all()}
 
-    # Initialize the worker pool within the instantiation module
-    instantiation.GLOBAL_EXECUTOR = concurrent.futures.ProcessPoolExecutor(
-        max_workers=workers,
-        initializer=instantiation._init_worker,
-        initargs=(logic_db,)
-    )
-
-    # Initial coordinate boundary for Zhengzhou region extent
+    
     zhengzhou_coords = [
         [113.549609, 34.791410],
         [113.657406, 34.791410],
@@ -53,66 +47,64 @@ def run_instantiation(workers, logic_db, target_db):
     ]
     region_poly = Polygon(zhengzhou_coords)
 
-    demo_events_desc = [
-        "Extreme Precipitation,Heavy Rain",
-        "Administrative Region,Urban Waterlogging"
-    ]
+    with open(events_path, 'r', encoding='utf-8') as f:
+        geojson_data = json.load(f)
 
-    ori_events = []
-    for desc in demo_events_desc:
-        ev = GlobalDisasterEvent.nodes.first_or_none(event_description=desc)
-        if ev:
-            ori_events.append(ev)
+    polygons = []
+    event_nodes = []
 
-    if not ori_events:
-        print("Warning: No matching GlobalDisasterEvents found for instantiation.")
-        instantiation.GLOBAL_EXECUTOR.shutdown(wait=True)
-        return False
+    
+    for feature in geojson_data['features']:
+        
+        geometry = feature['geometry']
 
-    ori_extents = [region_poly for _ in ori_events]
+        
+        
+        shapely_obj = shape(geometry)
+
+        if shapely_obj.geom_type in ('Polygon', 'MultiPolygon'):
+            polygons.append(shapely_obj)
+
+            event_name = feature['properties'].get('event', 'unknown')
+            event_node = GlobalDisasterEvent.nodes.first_or_none(event_description=event_name)
+            if not event_node:
+                print(f"未查找到事件：{event_name}")
+                raise ValueError(f"未查找到事件：{event_name}")
+            else:
+                event_nodes.append(event_node)
+
+            print(f"已获取事件: {event_name}, 影响范围面积约: {shapely_obj.area:.6f}")
 
     print("Executing recursive instantiation algorithm...")
 
-    # Trigger the core logic directly from the instantiation module
     instantiation.construct_instantiation_database(
-        ori_events=ori_events,
-        ori_extents=ori_extents,
-        ori_features=[],
-        region_extent=region_poly,
-        max_depth=2,
-        max_workers=workers
+        ori_events=event_nodes, ori_extents=polygons,
+        region_extent=region_poly, max_depth=2
     )
-
-    instantiation.GLOBAL_EXECUTOR.shutdown(wait=True)
     print(f"✅ Instantiation completed in: {time.time() - start_time:.2f} seconds")
     return True
 
 
-def run_mapping(target_db):
-    """
-    Sets up the environment and triggers the cartographic mapping workflow
-    by invoking the main process from the mapping module.
-    """
+def run_mapping(target_db, config, snapshot=None, output_dir=None, no_plots=False):
+    """Run the distance-field mapping workflow for an instance database."""
     print(f"\n{'=' * 50}")
     print(f"🗺️ [PHASE 2] Starting Cartographic Mapping (Database: {target_db})")
     print(f"{'=' * 50}")
     start_time = time.time()
 
-    # Sync module targets to the CLI arguments
+    
     mapping.ins_graph_database = target_db
 
     print("Executing Mapping calculations and plotting...")
-    # Trigger the main mapping execution logic
-    mapping.main_init()
+    
+    mapping.run_distance_fields(config, target_db, snapshot, output_dir, no_plots)
 
     print(f"✅ Mapping Phase completed in: {time.time() - start_time:.2f} seconds")
     return True
 
 
 def main():
-    """
-    CLI Router for the Instantiation and Mapping pipeline.
-    """
+    """Parse command-line options and run the selected pipeline stage."""
     parser = argparse.ArgumentParser(
         description="Standardized Command Line Toolkit for Knowledge Graph Instantiation and Mapping.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -150,23 +142,29 @@ def main():
     parser.add_argument(
         '-idb', '--ins_database',
         type=str,
-        default="events-ins-all-zhengzhou-1-sensor-en-parallel",
+        default="events-ins-all-zhengzhou-test-1",
         help="The Instantiated Neo4j database to write specific instances to."
     )
+    parser.add_argument('--map-config', default=os.path.join(project_root, 'instantiation_config.json'))
+    parser.add_argument('--events', default=os.path.join(project_root, 'data/geo_dataset/events_zhengzhou/onset.geojson'),
+                        help='GeoJSON with initial event names and impact geometries')
+    parser.add_argument('--snapshot', help='Use an existing distance-field snapshot instead of Neo4j')
+    parser.add_argument('--output-dir', help='New output directory for distance fields')
+    parser.add_argument('--no-plots', action='store_true', help='Export rasters without PNGs')
 
     args = parser.parse_args()
     overall_start = time.time()
 
     if args.task == 'instantiate':
-        run_instantiation(args.workers, args.logic_database, args.ins_database)
+        run_instantiation(args.workers, args.logic_database, args.ins_database, args.events)
 
     elif args.task == 'map':
-        run_mapping(args.ins_database)
+        run_mapping(args.ins_database, args.map_config, args.snapshot, args.output_dir, args.no_plots)
 
     elif args.task == 'all':
         print("\n🚀 [Pipeline Mode] Initiating End-to-End Instantiation & Mapping Pipeline...")
-        run_instantiation(args.workers, args.logic_database, args.ins_database)
-        run_mapping(args.ins_database)
+        run_instantiation(args.workers, args.logic_database, args.ins_database, args.events)
+        run_mapping(args.ins_database, args.map_config, args.snapshot, args.output_dir, args.no_plots)
         print(
             f"\n🎉 [Pipeline Mode] Production run completed successfully! Total elapsed time: {time.time() - overall_start:.2f} seconds")
 

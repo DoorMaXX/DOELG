@@ -23,93 +23,90 @@ from instantiation import get_cached_geojson, get_standard_factor_to_disaster, g
 warnings.filterwarnings('ignore')
 
 observation_importance = {
-    "河流": 1.5,
-    "湖泊": 1.0,
-    "流域": 1.0,
-    "河、湖岛": 1.0,
-    "河滩": 1.0,
-    "泉": 1.0,
-    "瀑布": 1.0,
-    "山体": 1.0,
-    "山洞": 1.0,
-    "漏斗": 1.0,
-    "沟壑": 1.0,
-    "山谷": 1.0,
-    "海域": 1.0,
-    "海岸": 1.0,
-    "海岛": 1.0,
-    "田地": 1.0,
-    "林地": 1.0,
-    "草地": 1.0,
-    "沙地": 1.0,
-    "湿地": 1.0,
-    "沟渠": 1.0,
-    "水库": 2.5,
-    "池": 1.0,
-    "井": 1.0,
-    "闸": 1.0,
-    "坝": 1.0,
-    "堤坊": 1.0,
-    "泵站": 1.0,
-    "行、蓄、滞洪区": 1.0,
-    "道路": 1.0,
-    "铁路": 1.0,
-    "地铁": 1.0,
-    "水运航道": 1.0,
-    "桥梁": 2.0,
-    "隧道": 3.0,
-    "索道": 0.4,
-    "地下人行通道": 2.0,
-    "下跨道": 2.0,
-    "交通连通交叉口": 1.0,
-    "火车站": 1.0,
-    "地铁站": 3.0,
-    "电车站": 1.0,
-    "码头": 1.0,
-    "港口": 1.0,
-    "灯塔": 1.0,
-    "机场": 1.0,
-    "停机坪": 1.0,
-    "地下停车场": 3.0,
-    "地面停车场": 1.0,
-    "多楼层停车场": 1.0,
-    "汽车站": 1.0,
-    "加油站": 1.0,
-    "房屋": 1.0,
-    "地下建筑": 1.0,
-    "生产类构筑物": 1.0,
-    "公共服务类构筑物": 1.0,
-    "科学观测类构筑物": 1.0,
-    "垣栅类构筑物": 3.0,
-    "输电线": 1.0,
-    "电塔": 1.0,
-    "电杆": 1.0,
-    "变电站": 1.0,
-    "通信线": 1.0,
-    "基站": 1.0,
-    "通信塔": 1.0,
-    "油气水输送管道": 1.0,
-    "储燃气罐": 1.0,
-    "水塔": 1.0,
-    "下水道": 1.0,
-    "窨井": 1.0,
-    "居民区": 1.0,
-    "公共管理与服务区": 1.0,
-    "商业区": 1.0,
-    "矿区": 1.0,
-    "仓库区": 1.0,
-    "绿地": 1.0,
-    "农业区": 1.0,
-    "公用设施区": 1.0,
+    "River": 1.5,
+    "Lake": 1.0,
+    "Basin": 1.0,
+    "Islet": 1.0,
+    "Shoal": 1.0,
+    "Spring": 1.0,
+    "Waterfall": 1.0,
+    "Mountain": 1.0,
+    "Cave": 1.0,
+    "Sinkhole": 1.0,
+    "Earth Bank": 1.0,
+    "Valley": 1.0,
+    "Sea": 1.0,
+    "Coastline": 1.0,
+    "Island": 1.0,
+    "Farmland": 1.0,
+    "Forest": 1.0,
+    "Meadow": 1.0,
+    "Sand": 1.0,
+    "Wetland": 1.0,
+    "Ditch": 1.0,
+    "Reservoir": 2.5,
+    "Pond": 1.0,
+    "Water Well": 1.0,
+    "Lock Gate": 1.0,
+    "Dam": 1.0,
+    "Dyke": 1.0,
+    "Pumping Station": 1.0,
+    "Flood Storage Area": 1.0,
+    "Highway": 1.0,
+    "Railway": 1.0,
+    "Subway": 1.0,
+    "Waterway": 1.0,
+    "Bridge": 2.0,
+    "Tunnel": 3.0,
+    "Aerialway": 0.4,
+    "Underpass": 2.0,
+    "Traffic Intersection": 1.0,
+    "Train Station": 1.0,
+    "Metro Station": 3.0,
+    "Tram Station": 1.0,
+    "Dock": 1.0,
+    "Port": 1.0,
+    "Lighthouse": 1.0,
+    "Aerodrome": 1.0,
+    "Apron": 1.0,
+    "Underground Parking": 3.0,
+    "Ground Parking": 1.0,
+    "In-Building Parking": 1.0,
+    "Bus Station": 1.0,
+    "Charging Station": 1.0,
+    "Building": 1.0,
+    "Underground Building": 1.0,
+    "Industrial Structure": 1.0,
+    "Public Service Structure": 1.0,
+    "Observation Structure": 1.0,
+    "Enclosure Structure": 3.0,
+    "Cable": 1.0,
+    "Tower": 1.0,
+    "Utility Pole": 1.0,
+    "Substation": 1.0,
+    "Telecom Line": 1.0,
+    "Telecom Base Station": 1.0,
+    "Communications Tower": 1.0,
+    "Pipeline": 1.0,
+    "Storage Tank": 1.0,
+    "Water Tower": 1.0,
+    "Sewer": 1.0,
+    "Sewer Vent": 1.0,
+    "Residential Area": 1.0,
+    "Public Management and Service Area": 1.0,
+    "Commercial Area": 1.0,
+    "Mining Area": 1.0,
+    "Warehouse": 1.0,
+    "Greenery": 1.0,
+    "Farmyard": 1.0,
+    "Infrastructure Area": 1.0,
     "Administrative Region": 1.0
 }
 importance_percentile = 0
 
 
 def calculate_feature_importance_in_same_disaster(is_new: bool = False):
-    """
-    Computes and aggregates spatial feature importance scores based on disaster occurrence probability metrics loaded from the graph.
-    """
+    """Calculate feature importance for instantiated disaster events."""
     has_calculate_disaster = []
     disasters = DisasterEvent.nodes.all()
     features = {}
@@ -159,9 +156,7 @@ def calculate_feature_importance_in_same_disaster(is_new: bool = False):
 
 
 def aggregate_importance_by_factor(factor_to_disaster, features_output):
-    """
-    Consolidates previously compiled geographic feature scores, classifying the overall observation significance per factor type (e.g. Water Level, Depth).
-    """
+    """Aggregate event feature importance by observation factor."""
     factor_data_map = {}
 
     for factor_name, related_events in factor_to_disaster.items():
@@ -198,9 +193,7 @@ def aggregate_importance_by_factor(factor_to_disaster, features_output):
 
 
 def convert_features_to_dataframe(features_dict):
-    """
-    Transforms hierarchical nested dictionaries of calculated geographic features and scores into a flat pandas DataFrame.
-    """
+    """Convert nested feature importance records to a dataframe."""
     data_rows = []
 
     for geo_type, id_map in features_dict.items():
@@ -225,9 +218,7 @@ def convert_features_to_dataframe(features_dict):
 
 def plot_event_specific_importance(features_output, region_coords, ori_coords,
                                    output_folder="./data/output_event_maps_beijing_2"):
-    """
-    Renders and exports map plots highlighting areas of critical observation emphasis scoped precisely to specific individual disaster events.
-    """
+    """Plot feature importance for each disaster event."""
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
@@ -333,9 +324,7 @@ def plot_event_specific_importance_field_basemap(
         aggregate_by_phenomenon=False,
         bg_image_path='background_map.jpg'
 ):
-    """
-    Interpolates spatial points to generate a Gaussian-blurred heatmap layer mapping event tracking priority fields, plotting the final result atop a background map.
-    """
+    """Plot and export event importance fields over a basemap."""
 
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -597,9 +586,7 @@ def plot_event_specific_importance_field_basemap(
 
 def plot_factor_specific_importance(factor_data_map, factor_to_disaster_map, region_coords, ori_coords,
                                     output_folder="./data/output_factor_maps_beijing_2"):
-    """
-    Renders discrete vector maps denoting spatial importance correlated back to specific observation factor types (e.g., sensing targets).
-    """
+    """Plot feature importance for each observation factor."""
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
@@ -729,18 +716,14 @@ def plot_factor_specific_importance(factor_data_map, factor_to_disaster_map, reg
 
 
 def sample_line_geometry(geom, step):
-    """
-    Evaluates regular intervals across a LineString to produce coordinate samples mirroring sensor evaluation targets.
-    """
+    """Sample points along a line at the given interval."""
     length = geom.length
     distances = np.arange(0, length, step)
     return [geom.interpolate(d) for d in distances]
 
 
 def sample_polygon_geometry(polygon, step):
-    """
-    Interpolates spatial samples internally mapping grid point targets across a larger Polygon definition.
-    """
+    """Sample points within a polygon at the given interval."""
     minx, miny, maxx, maxy = polygon.bounds
     xs = np.arange(minx, maxx, step)
     ys = np.arange(miny, maxy, step)
@@ -762,9 +745,7 @@ def calculate_observation_coverage_ratio(
         grid_crs="EPSG:4326",
         projected_crs="EPSG:3857"
 ):
-    """
-    Calculates spatial overlaps evaluating the percentage representing high-importance observation coverage intersections relative to actual surveyed disaster zone shapefiles.
-    """
+    """Calculate observation coverage within the study region."""
     key_obs_mask = (importance_grid > threshold).astype(np.uint8)
 
     shapes = rasterio.features.shapes(key_obs_mask, transform=transform)
@@ -815,9 +796,7 @@ def plot_factor_specific_importance_field_basemap(
         blur_sigma=5,
         bg_image_path='background_map.jpg'
 ):
-    """
-    Interpolates spatial points mapping aggregated specific observation factors into a unified contour grid overlaid on top of a continuous geographic base image.
-    """
+    """Plot and export factor importance fields over a basemap."""
     os.makedirs(output_folder, exist_ok=True)
     geotiff_folder = f"{output_folder}_geotiff"
     os.makedirs(geotiff_folder, exist_ok=True)
@@ -880,7 +859,9 @@ def plot_factor_specific_importance_field_basemap(
                 base_importance = row.importance
                 if base_importance <= 0: continue
 
-                type_weight = 1.0
+                feature_type = str(row.get("osm_id", "")).split("_")[0]
+                type_weight = observation_importance.get(feature_type, 1.0)
+                
                 final_value = base_importance * type_weight
 
                 if geom.geom_type in ["Polygon", "MultiPolygon"]:
@@ -988,10 +969,14 @@ def plot_factor_specific_importance_field_basemap(
         plt.close()
 
 
+def run_distance_fields(config, database=None, snapshot=None, output_dir=None, no_plots=False):
+    """Generate distance-decay fields from the instance graph or a snapshot."""
+    from distance_fields import run
+    return run(config, snapshot, output_dir, no_plots, database=database)
+
+
 def main_init():
-    """
-    Serves as the main operational pipeline invoking analytical logic processes handling extraction mappings through generated spatial graph visualizations.
-    """
+    """Run the legacy mapping workflow for the configured study region."""
     zhengzhou_coords = [
         [113.549609, 34.791410],
         [113.657406, 34.791410],
@@ -1008,8 +993,8 @@ def main_init():
     factor_specific_importance_folder = f"./data/ins_figures/{mission}/output_factor_maps"
     factor_specific_importance_field_folder = f"./data/ins_figures/{mission}/output_factor_maps_grid"
 
-    from instantiation import neo
-    neo.connect_database(ins_graph_database)
+    from ontology.neo4jmodel import Neo4jDatabaseConnector
+    Neo4jDatabaseConnector(ins_graph_database)
 
     features_output = calculate_feature_importance_in_same_disaster(True)
     factor_to_disaster = get_factor_to_disaster()

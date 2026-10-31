@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import matplotlib
 
-matplotlib.use('TkAgg')
+matplotlib.use('Agg')
 
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
@@ -132,7 +132,7 @@ def print_performance_table(shot_list, base_dir, methods=["default", "code"]):
     print("=" * 90 + "\n")
 
 
-def plot_combined_relation_comparison(shot_list, base_dir):
+def plot_combined_relation_comparison(shot_list, base_dir, output_dir=None):
     """
     Generates, formats, and saves a line chart visualizing the comparison of F1 scores
     between different extraction methods across various few-shot data configurations.
@@ -146,10 +146,10 @@ def plot_combined_relation_comparison(shot_list, base_dir):
                 f_path = Path(base_dir) / f"{method}-{shot}shot.xlsx"
 
             if f_path.exists():
-                _, f1, _ = calculate_combined_metrics(f_path)
+                _, _, f1 = calculate_combined_metrics(f_path)
                 results[method].append(f1)
             else:
-                results[method].append(0.0)
+                results[method].append(float('nan'))
 
     plt.figure(figsize=(10, 6), facecolor='white')
     ax = plt.gca()
@@ -189,18 +189,22 @@ def plot_combined_relation_comparison(shot_list, base_dir):
     plt.xticks(shot_list)
     plt.grid(True, linestyle='--', color='gray', alpha=0.5)
 
-    all_data = results["default"] + results["code"]
+    all_data = [value for value in results["default"] + results["code"] if pd.notna(value)]
     if all_data:
         d_min, d_max = min(all_data), max(all_data)
         margin = (d_max - d_min) * 0.2 if d_max != d_min else 0.1
         plt.ylim(max(0, d_min - margin), min(1.0, d_max + margin))
 
     for i in range(len(results["default"])):
+        if pd.isna(results['default'][i]):
+            continue
         plt.annotate(f"{results['default'][i]:.3f}",
                      (shot_list[i], results["default"][i]),
                      textcoords="offset points", xytext=(0, 10), ha='center')
 
     for i in range(len(results["code"])):
+        if pd.isna(results['code'][i]):
+            continue
         plt.annotate(f"{results['code'][i]:.3f}",
                      (shot_list[i], results["code"][i]),
                      textcoords="offset points", xytext=(0, -20), ha='center')
@@ -208,16 +212,11 @@ def plot_combined_relation_comparison(shot_list, base_dir):
     plt.legend(loc='upper left', frameon=True)
     plt.tight_layout()
 
-    output_path = Path(base_dir) / "combined_relations_comparison.png"
+    output_dir = Path(output_dir or base_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "combined_relations_comparison.png"
     plt.savefig(output_path, dpi=300)
-    plt.show()
+    plt.close()
 
 
 
-if __name__ == "__main__":
-    shots = [1, 5, 10, 30]
-    data_dir = "./data/extraction_dataset/event_relation/"
-
-    print_performance_table(shots, data_dir)
-
-    plot_combined_relation_comparison(shots, data_dir)

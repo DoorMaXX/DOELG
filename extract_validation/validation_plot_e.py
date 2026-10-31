@@ -5,7 +5,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-matplotlib.use('TkAgg')
+matplotlib.use('Agg')
 
 def normalize_text(text):
     """
@@ -163,7 +163,7 @@ def calculate_file_metrics(file_path):
     return so_f1, arg_f1, type_accuracy
 
 
-def plot_fewshot_results(shot_list, base_dir, method):
+def plot_fewshot_results(shot_list, base_dir, method, output_dir=None):
     """
     Evaluates extraction performance for a specific method across various few-shot settings
     and plots the resulting Subject/Object and Argument F1 score curves.
@@ -201,8 +201,10 @@ def plot_fewshot_results(shot_list, base_dir, method):
                      ha='center')
 
     plt.tight_layout()
-    plt.savefig("./data/extraction_dataset/event/default_performance_curve.png")
-    plt.show()
+    output_dir = Path(output_dir or base_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_dir / f'{method}_performance_curve.png')
+    plt.close()
 
 
 def get_method_scores(shot_list, base_dir, method_prefix):
@@ -230,11 +232,13 @@ def get_method_scores(shot_list, base_dir, method_prefix):
     return valid_shots, so_scores, arg_scores, type_acc_scores
 
 
-def plot_comparison_results(shot_list, base_dir, method1='default', method2='code'):
+def plot_comparison_results(shot_list, base_dir, method1='default', method2='code', output_dir=None):
     """
     Generates comparative visualizations plotting Subject/Object extraction F1, Arguments F1,
     and Type Accuracy between two different extraction methods across varying few-shot settings.
     """
+    output_dir = Path(output_dir or base_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     shots1, so1, arg1, type_acc1 = get_method_scores(shot_list, base_dir, method1)
     shots2, so2, arg2, type_acc2 = get_method_scores(shot_list, base_dir, method2)
 
@@ -254,8 +258,8 @@ def plot_comparison_results(shot_list, base_dir, method1='default', method2='cod
     for i in range(len(so2)):
         plt.annotate(f"{so2[i]:.3f}", (shots2[i], so2[i]), textcoords="offset points", xytext=(0, -15), ha='center')
     plt.tight_layout()
-    plt.savefig(Path(base_dir) / "comparison_subject_object.png")
-    plt.show()
+    plt.savefig(output_dir / "comparison_subject_object.png")
+    plt.close()
 
     plt.figure(figsize=(10, 6))
     plt.plot(shots1, arg1, marker='s', label=f'{method1} - Arguments', linewidth=2, color='orange')
@@ -271,8 +275,8 @@ def plot_comparison_results(shot_list, base_dir, method1='default', method2='cod
     for i in range(len(arg2)):
         plt.annotate(f"{arg2[i]:.3f}", (shots2[i], arg2[i]), textcoords="offset points", xytext=(0, -15), ha='center')
     plt.tight_layout()
-    plt.savefig(Path(base_dir) / "comparison_arguments.png")
-    plt.show()
+    plt.savefig(output_dir / "comparison_arguments.png")
+    plt.close()
 
     plt.figure(figsize=(10, 6))
 
@@ -334,14 +338,10 @@ def plot_comparison_results(shot_list, base_dir, method1='default', method2='cod
 
     plt.tight_layout()
     plt.savefig(
-        Path(base_dir) / "comparison_type_accuracy.png",
+        output_dir / "comparison_type_accuracy.png",
         dpi=300,
         facecolor='white'
     )
-    plt.show()
+    plt.close()
 
 
-if __name__ == "__main__":
-    shots = [1, 5, 10, 30]
-    data_dir = "./data/extraction_dataset/event/"
-    plot_comparison_results(shots, data_dir, method1='default', method2='code')

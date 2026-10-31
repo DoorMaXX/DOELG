@@ -139,7 +139,7 @@ class GeoObject(StructuredNode):
     geometry = StringProperty(required=False)
     is_location = BooleanProperty(required=False)
 
-    happen = RelationshipTo("DisPhen", "HAPPEN", model=HappenRelation)
+    happen = RelationshipTo("Impact", "HAPPEN", model=HappenRelation)
     origin = RelationshipTo("OriginText", "FROM", model=FromRelation)
     spatial = RelationshipTo("GeoObject", "SPATIAL", model=SpatialRelation)
     associate = RelationshipTo("GeoObject", "ASSOCIATE", model=AssociateRelation)
@@ -161,6 +161,12 @@ class Geometry(StructuredNode):
 
 
 class DisPhen(StructuredNode):
+    node_id = UniqueIdProperty()
+    impact_name = StringProperty(required=True)
+    impact_type = StringProperty(required=False)
+
+
+class Impact(StructuredNode):
     node_id = UniqueIdProperty()
     impact_name = StringProperty(required=True)
     impact_type = StringProperty(required=False)
@@ -208,8 +214,9 @@ class DisasterEvent(StructuredNode):
     probability = FloatProperty(default=1)
 
     geo_argument = RelationshipTo("GeoObject", "ARGUMENT", model=EventArgumentRelation)
-    impact_argument = RelationshipTo("DisPhen", "ARGUMENT", model=EventArgumentRelation)
+    impact_argument = RelationshipTo("Impact", "ARGUMENT", model=EventArgumentRelation)
     envDes_argument = RelationshipTo("EnvironmentDescription", "ARGUMENT", model=EventArgumentRelation)
+    envRule_argument = RelationshipTo("EnvironmentRule", "ARGUMENT", model=EventArgumentRelation)
     origin = RelationshipTo("OriginText", "FROM", model=FromRelation)
     cause = RelationshipTo("DisasterEvent", "CAUSE", model=CauseRelation)
     occurred_at = RelationshipTo("Time", "OCCURRED_AT", model=OccurredAtRelation)
@@ -252,7 +259,7 @@ class GlobalDisasterEvent(StructuredNode):
     event_description = StringProperty()
 
     geo_argument = RelationshipTo("GeoObject", "ARGUMENT", model=EventArgumentRelation)
-    impact_argument = RelationshipTo("DisPhen", "ARGUMENT", model=EventArgumentRelation)
+    impact_argument = RelationshipTo("Impact", "ARGUMENT", model=EventArgumentRelation)
     include = RelationshipTo("MergeDisasterEvent", "INCLUDE", model=IncludeRelation)
     cause = RelationshipTo("GlobalDisasterEvent", "CAUSE", model=CauseRelation)
     observed = RelationshipTo("Factor", "OBSERVED", model=ObservedRelation)

@@ -17,7 +17,7 @@ alongside disaster-causal and observation-triggering relationship identification
 llm = ChatOpenAI(temperature=0.3,
                  model="deepseek-chat",
                  openai_api_base="https://api.deepseek.com",
-                 openai_api_key="")
+                 openai_api_key="sk-184a85d7723a49dfbb7b2019c2f77e46")
 
 
 geo_types = [

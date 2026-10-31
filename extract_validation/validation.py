@@ -1,7 +1,5 @@
 import pandas as pd
 import json
-from geo_extraction import parse_geo_string_to_dict
-from event_extraction import parse_disaster_results, parse_observation_results, parse_disaster_cause1, parse_disaster_trigger1
 import ast
 import re
 import os
@@ -251,7 +249,10 @@ def geo_validata_main(file_path):
     })
 
     print(f"\n### 地理空间抽取评估结果 (文件: {os.path.basename(file_path)}) ###")
-    print(results.to_markdown(index=False))
+    try:
+        print(results.to_markdown(index=False))
+    except ImportError:
+        print(results.to_string(index=False))
 
 
 def dataset_process_geo_main(file_path):
@@ -259,6 +260,7 @@ def dataset_process_geo_main(file_path):
     Processes a geographic dataset file by converting raw text extractions into
     standardized JSON strings and applying backoff compensation logic for missing ground truth values.
     """
+    from geo_extraction import parse_geo_string_to_dict
     dataset = pd.read_excel(file_path)
 
     def get_json_string(text):
@@ -286,7 +288,7 @@ def dataset_process_geo_main(file_path):
 
     print(dataset[['raw_json', 'true_json']].head())
 
-    dataset.to_excel(file_path)
+    dataset.to_excel(file_path, index=False)
 
 
 def dataset_process_event_main(file_path, only_raw):
@@ -294,6 +296,7 @@ def dataset_process_event_main(file_path, only_raw):
     Processes an event extraction dataset file by transforming raw text representations of
     disaster and observation records into structured dictionaries and saving them as JSON.
     """
+    from event_extraction import parse_disaster_results, parse_observation_results
     dataset = pd.read_excel(file_path)
 
     def get_json_string(text):
@@ -331,7 +334,7 @@ def dataset_process_event_main(file_path, only_raw):
 
     print(dataset[['raw_json', 'true_json']].head())
 
-    dataset.to_excel(file_path)
+    dataset.to_excel(file_path, index=False)
 
 
 def dataset_process_event_relation_main(file_path, only_raw=False):
@@ -339,6 +342,8 @@ def dataset_process_event_relation_main(file_path, only_raw=False):
     Processes a relationship extraction dataset by compiling structural ground truth maps
     and model predictions for disaster cause and observation trigger relationships into JSON format.
     """
+    from event_extraction import (parse_disaster_results, parse_observation_results,
+                                  parse_disaster_cause_safe, parse_disaster_trigger_safe)
     dataset = pd.read_excel(file_path)
 
     def get_json_string_event(text: str):
@@ -352,9 +357,13 @@ def dataset_process_event_relation_main(file_path, only_raw=False):
         if pd.isna(text) or str(text).strip() == '' or str(text).strip() == 'nan':
             return [], []
         cause_string = text.split('trigger_relations')[0].replace('cause_relations', 'results')
-        trigger_string = 'results' + text.split('trigger_relations')[1]
-        cause_dict = parse_disaster_cause1(cause_string)
-        trigger_dict = parse_disaster_trigger1(trigger_string)
+        parts = text.split('trigger_relations', 1)
+        trigger_string = 'results' + parts[1] if len(parts) > 1 else ''
+        relations = parse_disaster_cause_safe(cause_string)
+        cause_dict = [{'head_disaster': {'subject': r.head_disaster.subject, 'object': r.head_disaster.object},
+                       'tail_disaster': {'subject': r.tail_disaster.subject, 'object': r.tail_disaster.object},
+                       'judgment_evidence': r.judgment_evidence} for r in relations]
+        trigger_dict = parse_disaster_trigger_safe(trigger_string)
         return cause_dict, trigger_dict
 
     def process_row(row):
@@ -391,12 +400,6 @@ def dataset_process_event_relation_main(file_path, only_raw=False):
 
     print(dataset[['raw_json', 'true_json']].head())
 
-    dataset.to_excel(file_path)
+    dataset.to_excel(file_path, index=False)
 
 
-if __name__ == '__main__':
-    dataset_process_event_main("./data/extraction_dataset/event/code-50shot.xlsx", False)
-    event_validata_main('./data/extraction_dataset/event/default-30shot.xlsx')
-    dataset_process_geo_main("./data/extraction_dataset/geo/new-2/code-10shot.xlsx")
-    geo_validata_main("./data/extraction_dataset/geo/code-10shot.xlsx")
-    dataset_process_event_relation_main('./data/extraction_dataset/event_relation/code-50shot.xlsx')

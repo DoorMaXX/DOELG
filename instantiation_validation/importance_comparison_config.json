@@ -1,0 +1,72 @@
+{
+  "runs": [
+    {
+      "name": "DOELG",
+      "event_dir": "../data/ins_figures/distance_fields/output_event_maps_grid/geotiff",
+      "factor_dir": "../data/ins_figures/distance_fields/output_factor_maps_grid_geotiff"
+    },
+    {
+      "name": "OELG",
+      "event_dir": "../data/ins_figures/oelg_distance_fields/output_event_maps_grid/geotiff",
+      "factor_dir": "../data/ins_figures/oelg_distance_fields/output_factor_maps_grid_geotiff"
+    }
+  ],
+  "point_sets": {
+    "collapse": {
+      "path": "../../KGC_1/KGC_2/data/validation_points/collapse/collapse_points.shp",
+      "exclude_status": []
+    },
+    "waterlogging": {
+      "path": "../../KGC_1/KGC_2/data/validation_points/waterlogging/郑州积水_WGS84.shp",
+      "exclude_status": []
+    }
+  },
+  "event_pairs": [
+    {
+      "file": "Subsidence_importance.tif",
+      "points": "collapse"
+    },
+    {
+      "file": "Waterlogging_importance.tif",
+      "points": "waterlogging"
+    }
+  ],
+  "factor_glob": "*_importance_field.tif",
+  "factor_fields_by_point_set": {
+    "collapse": [
+      "Subsidence Depth",
+      "Crack Width",
+      "Surface Deformation",
+      "Tilt Angle",
+      "Structural Characteristics"
+    ],
+    "waterlogging": [
+      "Water Body Area",
+      "Water Level",
+      "Precipitation",
+      "Soil Moisture"
+    ]
+  },
+  "area_mode": "geodesic",
+  "outside_policy": "error",
+  "area_fractions": [
+    0.05,
+    0.1,
+    0.2,
+    0.3
+  ],
+  "hit_target": 0.8,
+  "score_thresholds": [],
+  "validation_independent": false,
+  "comparison": {
+    "reference": "DOELG",
+    "candidate": "OELG"
+  },
+  "method_notes": [
+    "两者使用点线面差异化距离衰减与对数重叠增强；OELG只读取观测事件直接OBSERVED关联的StandardFactor，不使用Factor的MAPPING关系。",
+    "OELG为environment_mode=proxy的简化基线，源重要性仅按灾害层级折减，不按即时或延迟关系折减；数值不是灾害发生概率。",
+    "塌陷仅评价Subsidence Depth、Crack Width、Surface Deformation、Tilt Angle、Structural Characteristics；内涝仅评价Water Body Area、Water Level、Precipitation、Soil Moisture。",
+    "两者使用相同验证点、网格和面积口径进行现有结果对比；历史建模输入、起始事件及传播深度尚未独立验证一致，因此不声称这是只改变模型方法的严格控制实验。"
+  ],
+  "output_dir": "../data/importance_evaluation/oelg_vs_instantiation"
+}

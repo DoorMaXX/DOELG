@@ -2,11 +2,11 @@ import pandas as pd
 import ast
 import matplotlib.pyplot as plt
 from pathlib import Path
-from validation import is_fuzzy_match
+from extract_validation.validation import is_fuzzy_match
 import json
 import matplotlib
 
-matplotlib.use('TkAgg')
+matplotlib.use('Agg')
 plt.style.use('ggplot')
 
 
@@ -115,11 +115,13 @@ def get_method_scores(shot_list, base_dir, method_prefix):
     return valid_shots, f_scores, r_scores
 
 
-def plot_geo_comparison_results(shot_list, base_dir, method1='default', method2='code'):
+def plot_geo_comparison_results(shot_list, base_dir, method1='default', method2='code', output_dir=None):
     """
     Generates comparative line chart visualizations for both geographic features and
     spatial relations extraction F1 scores between two given methods across various few-shot settings.
     """
+    output_dir = Path(output_dir or base_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     s_def, f_def, r_def = get_method_scores(shot_list, base_dir, method1)
     s_code, f_code, r_code = get_method_scores(shot_list, base_dir, method2)
 
@@ -157,8 +159,8 @@ def plot_geo_comparison_results(shot_list, base_dir, method1='default', method2=
 
     plt.legend(loc='upper left', frameon=True)
     plt.tight_layout()
-    plt.savefig("features_comparison.png", dpi=300, facecolor='white')
-    plt.show()
+    plt.savefig(output_dir / 'features_comparison.png', dpi=300, facecolor='white')
+    plt.close()
 
     plt.figure(figsize=(9, 6))
     plt.plot(s_def, r_def, marker='s', label='Default (Relations)', linewidth=2, color='#e67e22', linestyle='--')
@@ -176,11 +178,7 @@ def plot_geo_comparison_results(shot_list, base_dir, method1='default', method2=
         plt.annotate(f"{r_def[i]:.3f}", (s_def[i], r_def[i]), textcoords="offset points", xytext=(0, -15),
                      ha='center')
     plt.tight_layout()
-    plt.savefig("relations_comparison.png", dpi=300, facecolor='white')
-    plt.show()
+    plt.savefig(output_dir / 'relations_comparison.png', dpi=300, facecolor='white')
+    plt.close()
 
 
-if __name__ == "__main__":
-    shots = [1, 5, 10]
-    data_dir = "./data/extraction_dataset/geo/"
-    plot_geo_comparison_results(shots, data_dir, method1='default', method2='code')

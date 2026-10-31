@@ -34,7 +34,6 @@ from generalization import (
     export_disaster_observation_to_json
 )
 from other.factor_map import main_factor_map_parallel_1, main_factor_map_
-from instantiation_o import migrate_observation_knowledge
 
 
 # ==========================================
