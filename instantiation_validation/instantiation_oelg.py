@@ -267,7 +267,10 @@ def screen_causal_graph(knowledge, root, max_depth):
         raise ValueError(f'知识库中不存在起始现象：{root}')
     edges = {}
     for edge in knowledge['edges']:
-        if edge['relation_type'] not in ('immediate', 'Altering'):
+        edge = dict(edge)
+        edge['relation_type'] = {'immediate': 'Immediate', 'altering': 'Altering'}.get(
+            str(edge['relation_type']).casefold(), edge['relation_type'])
+        if edge['relation_type'] not in ('Immediate', 'Altering'):
             raise ValueError(f'未识别的矩阵因果关系：{edge}')
         key = (edge['source'], edge['target'])
         if key in edges and edges[key]['relation_type'] != edge['relation_type']:
@@ -533,7 +536,7 @@ class OELGInstantiationBuilder:
         reachable_names = {e['target'] for e in preliminary + preliminary_removed} - {root_name}
         viable = {root_name}
         for name in sorted(reachable_names):
-            print(f'检查候选灾害及空间条件：{name}', flush=True)
+            print(f'Checking candidate disaster and spatial conditions: {name}', flush=True)
             selected, extent = self.calculate_disaster_extent(name, self.region)
             self.potential_features[name] = selected
             self.potential_extents[name] = extent
@@ -568,7 +571,7 @@ class OELGInstantiationBuilder:
             parent = queue.popleft()
             if parent['current_depth'] >= max_depth:
                 continue
-            print(f"实例化第 {parent['current_depth'] + 1} 层：{parent['phenomenon']}", flush=True)
+            print(f"Instantiating depth {parent['current_depth'] + 1}: {parent['phenomenon']}", flush=True)
             for edge in adjacency[parent['phenomenon']]:
                 name = edge['target']
                 if name in parent['path']:
@@ -1077,7 +1080,7 @@ def plot_observation_factor_maps(features_output, factor_to_disaster, config):
               for record in records for factor in record}
     skipped = sorted(set(factor_to_disaster) - mapped)
     if skipped:
-        print(f'以下观测因子没有对应的已选中地物，不生成分布图：{skipped}', flush=True)
+        print(f'No selected features for the following observation factors; maps skipped: {skipped}', flush=True)
     factor_config = dict(config)
     factor_config['risk_maps_folder'] = config.get('factor_maps_folder') or str(
         Path(config['risk_maps_folder']).parent / 'output_factor_maps_grid')
@@ -1206,10 +1209,10 @@ def plot_disaster_risk_maps(features_output, config, map_kind='phenomenon'):
         outputs.append(str(filename if render_png else tif_path))
         coverage_rows.append({map_kind: name, **coverage,
                               'image_file': filename.name if render_png else '', 'geotiff_file': str(tif_path)})
-        print(f'已输出 GeoTIFF：{tif_path}', flush=True)
-        print(f"  阈值：{threshold:.6g}；严格高于阈值：{coverage['above_threshold_pixels']} 像元；"
-              f"占全图：{coverage['above_threshold_map_percent']:.2f}%；"
-              f"占有效研究区：{coverage['above_threshold_region_percent']:.2f}%", flush=True)
+        print(f'GeoTIFF exported: {tif_path}', flush=True)
+        print(f"  Threshold: {threshold:.6g}；Strictly above threshold: {coverage['above_threshold_pixels']} pixels; "
+              f"of all cells: {coverage['above_threshold_map_percent']:.2f}%；"
+              f"of valid study area: {coverage['above_threshold_region_percent']:.2f}%", flush=True)
     if missing_ids:
         raise ValueError(f'有 {len(set(missing_ids))} 个地物 ID 未在原图层找到，不能视为完整结果：{sorted(set(missing_ids))[:10]}')
     report_path = folder / ('factor_threshold_coverage.csv' if map_kind == 'factor' else 'risk_threshold_coverage.csv')
@@ -1217,7 +1220,7 @@ def plot_disaster_risk_maps(features_output, config, map_kind='phenomenon'):
         writer = csv.DictWriter(stream, fieldnames=list(coverage_rows[0]))
         writer.writeheader()
         writer.writerows(coverage_rows)
-    print(f'阈值范围占比已保存：{report_path}', flush=True)
+    print(f'Threshold coverage saved: {report_path}', flush=True)
     return outputs
 
 
@@ -1382,7 +1385,7 @@ def main(argv=None):
         requested = (args.map_output_dir.resolve() if args.map_output_dir else
                      (map_config.parent / read_json(map_config)['output_dir']).resolve())
         output = available_output_folder(requested)
-        print(f'本次地图输出目录：{output}', flush=True)
+        print(f'Map output directory: {output}', flush=True)
         return run(map_config, output, args.rasters_only or args.no_plots,
                    oelg_override=config, only_kind=kind)
 
@@ -1394,7 +1397,7 @@ def main(argv=None):
     try:
         config = prepare_run_destination(config, repository)
         folder = Path(config['output_folder'])
-        print(f'本次实例快照：{config["snapshot"]}\n本次审计输出目录：{folder}', flush=True)
+        print(f'Instance snapshot: {config["snapshot"]}\nAudit output directory: {folder}', flush=True)
         # OELG owns geographic matching; the observation database supplies only
         # factors and candidate sensors, never geographic types or fallbacks.
         knowledge = load_instantiation_knowledge(repository, config)

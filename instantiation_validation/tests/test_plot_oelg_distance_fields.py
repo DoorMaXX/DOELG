@@ -9,7 +9,7 @@ import rasterio
 from shapely.geometry import box,mapping
 
 import distance_fields as fields
-from plot_oelg_distance_fields import score_events,build_snapshot,run,write_csv
+from plot_oelg_distance_fields import score_events,build_snapshot,run
 
 
 class OELGDistanceTests(unittest.TestCase):

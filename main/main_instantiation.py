@@ -3,7 +3,6 @@ import os
 import sys
 import time
 from shapely.geometry import Polygon, shape
-import concurrent.futures
 import json
 
 
@@ -68,12 +67,12 @@ def run_instantiation(workers, logic_db, target_db, events_path):
             event_name = feature['properties'].get('event', 'unknown')
             event_node = GlobalDisasterEvent.nodes.first_or_none(event_description=event_name)
             if not event_node:
-                print(f"未查找到事件：{event_name}")
-                raise ValueError(f"未查找到事件：{event_name}")
+                print(f"Event not found: {event_name}")
+                raise ValueError(f"Event not found: {event_name}")
             else:
                 event_nodes.append(event_node)
 
-            print(f"已获取事件: {event_name}, 影响范围面积约: {shapely_obj.area:.6f}")
+            print(f"Event found: {event_name}, approximate affected area: {shapely_obj.area:.6f}")
 
     print("Executing recursive instantiation algorithm...")
 
@@ -135,7 +134,7 @@ def main():
     parser.add_argument(
         '-ldb', '--logic_database',
         type=str,
-        default="events-logic-all-1zz-sensor-en",
+        default="events-logic-all-1zz-sensor-en-0904",
         help="The Logic Neo4j database to read generic relations from."
     )
 

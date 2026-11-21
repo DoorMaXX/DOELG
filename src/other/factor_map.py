@@ -1,67 +1,166 @@
 from ontology.neo4jmodel import Neo4jDatabaseConnector, Factor, StandardFactor
 from geo_extraction import llm
 from langchain.agents import create_agent
-from langchain_community.document_loaders import UnstructuredFileLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_ollama import OllamaEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.tools import tool
-import pandas as pd
-from langchain_core.documents import Document
-import pickle
 from pydantic import BaseModel, Field
-from typing import List, Literal, Optional
+from typing import List, Literal
 import concurrent.futures
-from threading import Lock
+from src.construct_config import get_setting
+from src.graph_language import english_term
 
 indicator_mapping = {
-    '降水量': [],
-    '空气温度': [],
-    '空气湿度': [],
-    '气压': [],
-    '风速': [],
-    '风向': [],
-    '云顶高度': [],
-    '云顶温度': [],
-    '云覆盖率': [],
-    '地表温度': [],
-    '地表覆盖情况': [],
-    '植被覆盖率': [],
-    '土壤湿度': [],
-    '水体面积': [],
-    '水位': [],
-    '水流速度': [],
-    '水流量': [],
-    '水质': ['河流', '湖泊', '水库', '池', '井', '沟渠', '湿地', '海域'],
-    '地表形变速率、形变量': [],
-    '设施形变速率、形变量': [
-        '坝', '堤坊', '闸', '桥梁', '隧道', '索道',
-        '地下人行通道', '下跨道', '火车站', '地铁站', '码头', '港口', '灯塔',
-        '机场', '停机坪', '房屋', '地下建筑', '生产类构筑物', '公共服务类构筑物',
-        '科学观测类构筑物', '垣栅类构筑物', '输电线', '电塔', '电杆', '变电站',
-        '通信塔', '油气水输送管道', '储燃气罐', '水塔', '下水道', '窨井'
+    "Precipitation": [],
+    "Air Temperature": [],
+    "Air Humidity": [],
+    "Atmospheric Pressure": [],
+    "Wind Speed": [],
+    "Wind Direction": [],
+    "Cloud Top Height": [],
+    "Cloud Top Temperature": [],
+    "Cloud Fraction": [],
+    "Surface Temperature": [],
+    "Land Cover": [],
+    "Vegetation Fraction": [],
+    "Soil Moisture": [],
+    "Water Body Area": [],
+    "Water Level": [],
+    "Water Flow Rate": [],
+    "Water Flow Velocity": [],
+    "Water Quality": [
+        "River",
+        "Lake",
+        "Reservoir",
+        "Pond",
+        "Water Well",
+        "Ditch",
+        "Wetland",
+        "Sea"
     ],
-    '沉降深度': [],
-    '裂缝宽度': [
-        '坝', '堤坊', '闸', '桥梁', '隧道', '索道', '道路',
-        '地下人行通道', '下跨道', '火车站', '地铁站', '码头', '港口', '灯塔',
-        '机场', '停机坪', '房屋', '地下建筑', '生产类构筑物', '公共服务类构筑物',
-        '科学观测类构筑物', '垣栅类构筑物', '输电线', '电塔', '电杆', '变电站',
-        '通信塔', '油气水输送管道', '储燃气罐', '水塔', '下水道', '窨井', '山体'
+    "Surface Deformation": [],
+    "Infrastructure Deformation": [
+        "Dam",
+        "Dyke",
+        "Lock Gate",
+        "Bridge",
+        "Tunnel",
+        "Aerialway",
+        "Underpass",
+        "Underpass",
+        "Train Station",
+        "Metro Station",
+        "Dock",
+        "Port",
+        "Lighthouse",
+        "Aerodrome",
+        "Apron",
+        "Building",
+        "Underground Building",
+        "Industrial Structure",
+        "Public Service Structure",
+        "Observation Structure",
+        "Enclosure Structure",
+        "Cable",
+        "Tower",
+        "Utility Pole",
+        "Substation",
+        "Communications Tower",
+        "Pipeline",
+        "Storage Tank",
+        "Water Tower",
+        "Sewer",
+        "Sewer Vent"
     ],
-    '倾斜倾角': [
-        '电塔', '电杆', '通信塔', '灯塔', '水塔', '房屋', '高层建筑',
-        '坝', '桥梁', '烟囱', '山体'
+    "Subsidence Depth": [],
+    "Crack Width": [
+        "Dam",
+        "Dyke",
+        "Lock Gate",
+        "Bridge",
+        "Tunnel",
+        "Aerialway",
+        "Highway",
+        "Underpass",
+        "Underpass",
+        "Train Station",
+        "Metro Station",
+        "Dock",
+        "Port",
+        "Lighthouse",
+        "Aerodrome",
+        "Apron",
+        "Building",
+        "Underground Building",
+        "Industrial Structure",
+        "Public Service Structure",
+        "Observation Structure",
+        "Enclosure Structure",
+        "Cable",
+        "Tower",
+        "Utility Pole",
+        "Substation",
+        "Communications Tower",
+        "Pipeline",
+        "Storage Tank",
+        "Water Tower",
+        "Sewer",
+        "Sewer Vent",
+        "Mountain"
     ],
-    '渗透（孔隙）水压力': [
-        '坝', '堤坊', '山体', '隧道', '地下建筑', '矿区', '道路'
+    "Tilt Angle": [
+        "Tower",
+        "Utility Pole",
+        "Communications Tower",
+        "Lighthouse",
+        "Water Tower",
+        "Building",
+        "High-rise Building",
+        "Dam",
+        "Bridge",
+        "Chimney",
+        "Mountain"
     ],
-    '结构破坏特征': [
-        '坝', '堤坊', '闸', '桥梁', '隧道', '索道', '道路',
-        '地下人行通道', '下跨道', '火车站', '地铁站', '码头', '港口', '灯塔',
-        '机场', '停机坪', '房屋', '地下建筑', '生产类构筑物', '公共服务类构筑物',
-        '科学观测类构筑物', '垣栅类构筑物', '输电线', '电塔', '电杆', '变电站',
-        '通信塔', '油气水输送管道', '储燃气罐', '水塔', '下水道', '窨井', '山体'
+    "Seepage Pressure": [
+        "Dam",
+        "Dyke",
+        "Mountain",
+        "Tunnel",
+        "Underground Building",
+        "Mining Area",
+        "Highway"
+    ],
+    "Structural Characteristics": [
+        "Dam",
+        "Dyke",
+        "Lock Gate",
+        "Bridge",
+        "Tunnel",
+        "Aerialway",
+        "Highway",
+        "Underpass",
+        "Underpass",
+        "Train Station",
+        "Metro Station",
+        "Dock",
+        "Port",
+        "Lighthouse",
+        "Aerodrome",
+        "Apron",
+        "Building",
+        "Underground Building",
+        "Industrial Structure",
+        "Public Service Structure",
+        "Observation Structure",
+        "Enclosure Structure",
+        "Cable",
+        "Tower",
+        "Utility Pole",
+        "Substation",
+        "Communications Tower",
+        "Pipeline",
+        "Storage Tank",
+        "Water Tower",
+        "Sewer",
+        "Sewer Vent",
+        "Mountain"
     ]
 }
 
@@ -80,10 +179,27 @@ class ResultInfo(BaseModel):
     mappings: List[MappingItem] = Field(description="所有匹配到的标准指标列表，按关联程度降序排列")
 
 
+class MappingItem_en(BaseModel):
+    standard_name: str = Field(..., description="Matched standard indicator name, exactly as listed")
+    score: float = Field(..., description="Association confidence (0.0 - 1.0)")
+    relation_type: Literal["exact_match", "broad_to_narrow", "narrow_to_broad", "related"] = Field(
+        ...,
+        description="Relation: exact_match, broad_to_narrow (input is broader), narrow_to_broad (input is narrower), or related"
+    )
+    reasoning: str = Field(..., description="Briefly explain the match and broader, narrower, or semantic association")
+
+class ResultInfo_en(BaseModel):
+    mappings: List[MappingItem_en] = Field(description="Matched standard indicators in descending order of relevance")
+
+
 def map_standard_factor(factor, standard_factors):
     """
     Uses an LLM agent to map a natural language observation factor to one or more
     items in the standardized observation indicator library.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See map_standard_factor_en for the English version.
     """
     sys_prompt = f"""
     你是一位资深的地球观测与空间环境监测专家。你的任务是分析用户的“观测因子”，并将其映射到“标准化观测指标库”中具体的一个或多个指标。
@@ -118,6 +234,45 @@ def map_standard_factor(factor, standard_factors):
     return result
 
 
+def map_standard_factor_en(factor, standard_factors):
+    """
+    Uses an LLM agent to map a natural language observation factor to one or more
+    items in the standardized observation indicator library.
+    """
+    sys_prompt = f"""
+    You are an Earth observation and environmental monitoring expert. Map the user observation factor to one or more indicators in the standardized library.
+
+    ### Core task
+    1. **Semantic understanding**: Analyze natural-language input, including informal wording or broader scientific concepts.
+    2. **Ontology reasoning**: Find matching physical quantities, chemical components, or environmental parameters.
+    3. **Multiple mappings**: One user requirement may correspond to several standard indicators.
+
+    ### Standardized observation indicator library
+    {standard_factors}
+
+    ### Scoring criteria
+    - **0.9 - 1.0**: Exact match or direct synonym of the standard term.
+    - **0.7 - 0.9**: Strong broader-to-narrower association (User: "meteorological parameters" -> Std: "air temperature","air humidity"...)。
+    - **0.5 - 0.7**: Association between a phenomenon and a physical quantity (User: "building collapse" -> Std: "structural damage characteristics")。
+    - **< 0.5**: Weak association; provide only if no better option exists.
+
+    ### Output requirements
+    - Output JSON only.
+    - `standard_name` must exactly match a string in the list without changing any character.
+    - List every mapped indicator when multiple mappings are required.
+    """
+
+    agent = create_agent(llm, system_prompt=sys_prompt, response_format=ResultInfo_en)
+
+    output = agent.invoke(
+        {"messages": [{"role": "user", "content": f"User observation requirement: '{factor}'"}]}
+    )
+
+    result: ResultInfo_en = output["structured_response"]
+    return result
+
+
+
 def main_factor_map(neo, logic_graph_database):
     """
     Main function to map all factors in the database to standard factors and
@@ -139,7 +294,7 @@ def main_factor_map(neo, logic_graph_database):
         print(f"Factor:{factor_name}\n, result:{map_result}\n")
         map_list = map_result.mappings
         for f_map in map_list:
-            standard_name = f_map.standard_name
+            standard_name = english_term(f_map.standard_name, strict=True)
             score = f_map.score
             relation_type = f_map.relation_type
             evidence = f_map.reasoning
@@ -174,7 +329,7 @@ def main_factor_map_(neo, logic_graph_database, factor_map):
     for factor_node in factor_nodes:
         factor_name = factor_node.factor_name
 
-        standard_name = factor_map.get(factor_name, '')
+        standard_name = english_term(factor_map.get(factor_name, ''), strict=True)
         if standard_name == '':
             continue
 
@@ -200,11 +355,13 @@ def map_single_factor_task(factor_node, standard_factor_names):
         return factor_node, None, str(e)
 
 
-def main_factor_map_parallel(neo, logic_graph_database, max_workers=10):
+def main_factor_map_parallel(neo, logic_graph_database, max_workers=None):
     """
     Executes the factor mapping process concurrently using a thread pool
     for faster LLM processing, then saves results back to the database.
     """
+    if max_workers is None:
+        max_workers = get_setting('factor_mapping.workers')
     standard_factor_names = list(indicator_mapping.keys())
     neo.connect_database(logic_graph_database)
 
@@ -238,7 +395,7 @@ def main_factor_map_parallel(neo, logic_graph_database, max_workers=10):
             print(f"Mapping successful: {factor_node.factor_name}, saving to db...")
 
             for f_map in map_result.mappings:
-                sf_node = StandardFactor.nodes.first_or_none(factor_name=f_map.standard_name)
+                sf_node = StandardFactor.nodes.first_or_none(factor_name=english_term(f_map.standard_name, strict=True))
                 if sf_node:
                     rel_m = factor_node.relate.relationship(sf_node)
                     data = {
@@ -256,45 +413,6 @@ def main_factor_map_parallel(neo, logic_graph_database, max_workers=10):
     print("Mapping and database synchronization complete.")
 
 
-def map_standard_factor_1(factor, standard_factors):
-    """
-    Uses an LLM agent to map a natural language observation factor to strictly
-    one standardized observation indicator (best match).
-    """
-    sys_prompt = f"""
-    你是一位资深的地球观测与空间环境监测专家。你的任务是分析用户的“观测因子”，并将其映射到“标准化观测指标库”中**唯一一个最精确匹配**的指标。
-
-    ### 核心任务
-    1. **语义理解**：分析用户输入的自然语言（可能是不规范的、口语化的，或者是上位的科学概念）。
-    2. **本体推理**：在标准库中寻找对应的物理量、化学成分或环境参数。
-    3. **一对一精确映射**：严格限制！无论用户的输入多么宽泛，你**必须且只能**选择一个最核心、相关度最高的标准指标。
-
-    ### 标准化观测指标库
-    {standard_factors}
-
-    ### 评分标准 (Score)
-    - **0.9 - 1.0**: 精确对应 (Exact Match) 或标准术语的直接别名。
-    - **0.7 - 0.9**: 上位词到下位词的强关联 (User: "气象参数" -> 选取最具代表性的如"空气温度")。
-    - **0.5 - 0.7**: 现象与物理量的关联 (User: "房屋倒塌" -> Std: "结构破坏特征")。
-    - **< 0.5**: 弱相关，仅在没有更好选项时提供。
-
-    ### 输出要求
-    - 仅输出 JSON 格式。
-    - `standard_name` 必须**严格**等于列表中的字符串，禁止修改一个字符。
-    - **禁止输出多个指标的列表，只允许返回得分最高的那一个指标。**
-    """
-
-    agent = create_agent(llm, system_prompt=sys_prompt, response_format=ResultInfo)
-
-    output = agent.invoke(
-        {"messages": [{"role": "user", "content": f"用户观测需求: '{factor}'"}]}
-    )
-
-    result = output["structured_response"]
-
-    return result
-
-
 def map_single_factor_task_1(factor_node, standard_factor_names):
     """
     Execution task for evaluating a single factor using strict one-to-one mapping.
@@ -307,11 +425,13 @@ def map_single_factor_task_1(factor_node, standard_factor_names):
         return factor_node, None, str(e)
 
 
-def main_factor_map_parallel_1(neo, logic_graph_database, max_workers=20):
+def main_factor_map_parallel_1(neo, logic_graph_database, max_workers=None):
     """
     Executes the strict one-to-one factor mapping process concurrently,
     filters results by score, and saves the best match to the database.
     """
+    if max_workers is None:
+        max_workers = get_setting('factor_mapping.strict_workers')
     standard_factor_names = list(indicator_mapping.keys())
     neo.connect_database(logic_graph_database)
 
@@ -350,17 +470,17 @@ def main_factor_map_parallel_1(neo, logic_graph_database, max_workers=20):
 
             best_map = sorted(map_result.mappings, key=lambda x: x.score, reverse=True)[0]
 
-            if best_map.score < 0.5:
+            if best_map.score < get_setting('factor_mapping.minimum_score'):
                 print(
                     f"Factor '{factor_node.factor_name}' best match '{best_map.standard_name}' scored {best_map.score}, discarded.")
                 continue
 
-            sf_node = StandardFactor.nodes.first_or_none(factor_name=best_map.standard_name)
+            sf_node = StandardFactor.nodes.first_or_none(factor_name=english_term(best_map.standard_name, strict=True))
             if sf_node:
                 rel_m = factor_node.relate.relationship(sf_node)
                 data = {
                     'score': best_map.score,
-                    'type': getattr(best_map, 'relation_type', '映射'),
+                    'type': getattr(best_map, 'relation_type', 'Mapping'),
                     'evidence': getattr(best_map, 'reasoning', '')
                 }
 
@@ -387,5 +507,5 @@ def update_standard_factors():
 
 
 if __name__ == '__main__':
-    neo = Neo4jDatabaseConnector('events-instantiation-beijing-2')
+    neo = Neo4jDatabaseConnector(get_setting('standalone.factor_database'))
     update_standard_factors()

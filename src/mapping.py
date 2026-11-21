@@ -14,10 +14,9 @@ from rasterio.transform import from_origin
 from rasterio.features import rasterize
 from shapely.geometry import shape, Polygon, MultiPolygon, Point
 from shapely import wkt
-from neomodel import db
 
 from ontology.neo4jmodel import DisasterEvent, OSMFeature
-from instantiation import get_cached_geojson, get_standard_factor_to_disaster, get_factor_to_disaster, \
+from instantiation import get_cached_geojson, get_factor_to_disaster, \
     ins_graph_database
 
 warnings.filterwarnings('ignore')
@@ -1004,7 +1003,7 @@ def main_init():
     plot_event_specific_importance_field_basemap(features_output, region_coords, ori_coords,
                                                  event_specific_importance_field_folder,
                                                  aggregate_by_phenomenon=True,
-                                                 bg_image_path="./data/background_zhengzhou.png")
+                                                 bg_image_path="./data/geo_dataset/geos_zhengzhou/bitmap.png")
 
     factors_output = aggregate_importance_by_factor(factor_to_disaster, features_output)
 
@@ -1013,7 +1012,7 @@ def main_init():
 
     plot_factor_specific_importance_field_basemap(factors_output, factor_to_disaster, region_coords, ori_coords,
                                                   output_folder=factor_specific_importance_field_folder,
-                                                  bg_image_path="./data/background_zhengzhou.png")
+                                                  bg_image_path="./data/geo_dataset/geos_zhengzhou/bitmap.png")
 
 
 if __name__ == "__main__":

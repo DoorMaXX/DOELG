@@ -1,4 +1,3 @@
-import copy
 from types import SimpleNamespace
 import unittest
 from shapely.geometry import box

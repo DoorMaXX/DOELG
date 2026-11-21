@@ -1,27 +1,34 @@
 from neomodel import StructuredNode
-from ontology.neo4jmodel import Neo4jDatabaseConnector, GeoObject, DisPhen, DisasterEvent, Time, Factor, OriginText, \
-    neo4j_db, \
-    Sensor, ObservationEvent
+from ontology.neo4jmodel import (
+    GeoObject, Impact, DisasterEvent, Factor, neo4j_db, Sensor, ObservationEvent
+)
 from langchain.agents import create_agent
 import numpy as np
 import ollama
 from sklearn.cluster import DBSCAN
 from sklearn.metrics.pairwise import cosine_similarity
-from typing import Dict, List, Any
+from typing import List
 from event_extraction import llm
-import pickle
-from event_extraction import geo_types, impact_types, sensor_types, platform_types
+from event_extraction import (geo_types_en as geo_types, impact_types_en as impact_types,
+                              sensor_types_en as sensor_types, platform_types_en as platform_types)
+from src.graph_language import english_term
+from event_extraction import geo_types_en, impact_types_en, sensor_types_en, platform_types_en
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+from src.construct_config import get_setting
 
 
-def get_ollama_embedding(text: str, model_name: str = "quentinz/bge-large-zh-v1.5:latest"):
+def get_ollama_embedding(text: str, model_name: str = None):
     """
     Retrieves the text embedding vector using the specified Ollama model.
     Returns the embedding list on success or None if the API call fails.
     """
+    if model_name is None:
+        model_name = get_setting('embeddings.fusion.model')
+    host = get_setting('embeddings.fusion.base_url')
+    client = ollama.Client(host=host) if host else ollama
     try:
-        response = ollama.embeddings(
+        response = client.embeddings(
             model=model_name,
             prompt=text
         )
@@ -78,13 +85,17 @@ def merge_nodes(alias_node: StructuredNode, canonical_node: StructuredNode, node
     alias_node.delete()
 
 
-def get_dbscan_cluster(texts, all_info, eps=0.15, min_samples=2, metric='precomputed'):
+def get_dbscan_cluster(texts, all_info, eps=None, min_samples=None, metric=None):
     """
     Calculates cosine similarities for a list of text embeddings and applies the DBSCAN
     algorithm to group similar texts into clusters.
     Returns a dictionary grouping the associated entity information by cluster labels.
     Safely bypasses execution if inputs or valid embeddings are empty.
     """
+    settings = get_setting('fusion.dbscan')
+    eps = settings['eps'] if eps is None else eps
+    min_samples = settings['min_samples'] if min_samples is None else min_samples
+    metric = settings['metric'] if metric is None else metric
     if not texts or not all_info:
         return {}
 
@@ -132,6 +143,10 @@ def geo_is_cluster_ok(cluster: list):
     """
     Uses an LLM agent to evaluate if a cluster of geographic entities refers to
     the same real-world object.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See geo_is_cluster_ok_en for the English version.
     """
     sys_prompt = """
         你是一名资深的地理知识图谱（GeoKG）专家，你的核心任务是对给定的地理实体名称列表进行同义实体聚类和归并。
@@ -155,10 +170,42 @@ def geo_is_cluster_ok(cluster: list):
     return output["structured_response"]
 
 
+def geo_is_cluster_ok_en(cluster: list):
+    """
+    Uses an LLM agent to evaluate if a cluster of geographic entities refers to
+    the same real-world object.
+    """
+    sys_prompt = """
+        You are a senior geographic knowledge graph (GeoKG) expert. Cluster and merge synonymous geographic entity names.
+        Judge using the following principles:
+        1. Synonyms and aliases: merge full names, abbreviations, aliases, and common misspellings of the same entity.
+        2. Type compatibility: merged entities must have the same or highly compatible types.
+        3. Geometry compatibility: merged entities must share a core geometry or differ only because of spatial scale.
+        4. Unified name: select the most complete, accurate, or authoritative name as cluster_geo_name.
+    """
+    from pydantic import BaseModel, Field
+
+    class ClusterInfo(BaseModel):
+        is_all_cluster: bool = Field(description="Whether all names refer to the same feature")
+        cluster_geo_name: str = Field(description="Unified standard name")
+        cluster_geo_type: str = Field(description=f"Feature type, which must be chosen from: {geo_types_en}")
+        cluster_geometry: str = Field(description="Geometry type: 'point', 'linestring', or 'polygon'")
+        excluded_geo: List[str] = Field(description="Names excluded from the largest merged set")
+
+    agent = create_agent(llm, system_prompt=sys_prompt, response_format=ClusterInfo)
+    output = agent.invoke({"messages": [{"role": "user", "content": f"geo_names=‘{cluster}’"}]})
+    return output["structured_response"]
+
+
+
 def impact_is_cluster_ok(cluster: list):
     """
     Uses an LLM agent to validate if a cluster of disaster phenomena represents
     the same homogeneous phenomenon.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See impact_is_cluster_ok_en for the English version.
     """
     sys_prompt = """
         你是一名顶尖的灾害知识图谱专家，核心任务是对给定的灾害现象名称列表进行严格的多类别区分和同义实体聚类。
@@ -180,10 +227,40 @@ def impact_is_cluster_ok(cluster: list):
     return output["structured_response"]
 
 
+def impact_is_cluster_ok_en(cluster: list):
+    """
+    Uses an LLM agent to validate if a cluster of disaster phenomena represents
+    the same homogeneous phenomenon.
+    """
+    sys_prompt = """
+        You are a disaster knowledge graph expert. Distinguish categories and cluster synonymous disaster phenomena.
+        1. Hazard drivers: for example, precipitation and heavy rain.
+        2. Disaster phenomena or consequences: for example, flooding and floodwater.
+        3. Abstract states or events: for example, being affected or an emergency.
+        Do not merge across categories.
+    """
+    from pydantic import BaseModel, Field
+
+    class ClusterInfo(BaseModel):
+        is_all_cluster: bool = Field(description="Whether all names are synonymous")
+        cluster_impact_name: str = Field(description="Unified standard name")
+        cluster_impact_type: str = Field(description=f"Disaster phenomenon type: {impact_types_en}")
+        excluded_impact: List[str] = Field(description="Names excluded from the largest merged set")
+
+    agent = create_agent(llm, system_prompt=sys_prompt, response_format=ClusterInfo)
+    output = agent.invoke({"messages": [{"role": "user", "content": f"impacts=‘{cluster}’"}]})
+    return output["structured_response"]
+
+
+
 def sensor_is_cluster_ok(cluster: list):
     """
     Uses an LLM agent to assess a cluster of sensor names, ensuring they refer
     to the identical sensor model.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See sensor_is_cluster_ok_en for the English version.
     """
     sys_prompt = """
         你是一名资深的传感器观测知识图谱专家，任务是对给定的传感器名称列表进行同义实体聚类和归并。
@@ -202,10 +279,37 @@ def sensor_is_cluster_ok(cluster: list):
     return output["structured_response"]
 
 
+def sensor_is_cluster_ok_en(cluster: list):
+    """
+    Uses an LLM agent to assess a cluster of sensor names, ensuring they refer
+    to the identical sensor model.
+    """
+    sys_prompt = """
+        You are a sensor-observation knowledge graph expert. Cluster and merge synonymous sensor names.
+    """
+    from pydantic import BaseModel, Field
+
+    class ClusterInfo(BaseModel):
+        is_all_cluster: bool = Field(description="Whether all names are synonymous")
+        cluster_sensor_name: str = Field(description="Unified standard name")
+        cluster_sensor_type: str = Field(description=f"Sensor type: {sensor_types_en}")
+        cluster_platform: str = Field(description=f"Platform: {platform_types_en}")
+        excluded_sensor: List[str] = Field(description="Names excluded from the largest merged set")
+
+    agent = create_agent(llm, system_prompt=sys_prompt, response_format=ClusterInfo)
+    output = agent.invoke({"messages": [{"role": "user", "content": f"sensor_names=‘{cluster}’"}]})
+    return output["structured_response"]
+
+
+
 def factor_is_cluster_ok(cluster: list):
     """
     Uses an LLM agent to verify if a list of observable factor names refers
     to the identical abstract property.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See factor_is_cluster_ok_en for the English version.
     """
     sys_prompt = """
         你是一名资深的地理知识图谱专家，任务是对可观测因子列表进行同义实体聚类和归并。
@@ -223,6 +327,28 @@ def factor_is_cluster_ok(cluster: list):
     return output["structured_response"]
 
 
+def factor_is_cluster_ok_en(cluster: list):
+    """
+    Uses an LLM agent to verify if a list of observable factor names refers
+    to the identical abstract property.
+    """
+    sys_prompt = """
+        You are a geographic knowledge graph expert. Cluster and merge synonymous observable factors.
+    """
+    from pydantic import BaseModel, Field
+
+    class ClusterInfo(BaseModel):
+        is_all_cluster: bool = Field(description="Whether all names are synonymous")
+        cluster_factor_name: str = Field(description="Unified standard name")
+        cluster_factor_type: str = Field(description="Type: 'environment factors' or 'feature factors'")
+        excluded_factor: List[str] = Field(description="Names excluded from the largest merged set")
+
+    agent = create_agent(llm, system_prompt=sys_prompt, response_format=ClusterInfo)
+    output = agent.invoke({"messages": [{"role": "user", "content": f"factors=‘{cluster}’"}]})
+    return output["structured_response"]
+
+
+
 def generic_cluster_identify(
         clusters: dict,
         task_name: str,
@@ -237,12 +363,12 @@ def generic_cluster_identify(
     """
     fusion_nodes = {}
     delete_nodes = []
-    MAX_ROUNDS = 2
+    max_rounds = get_setting('fusion.max_rounds')
     current_clusters = clusters
     next_round_nodes = []
 
     if not current_clusters:
-        return (fusion_nodes, delete_nodes) if task_name == '因子' else fusion_nodes
+        return (fusion_nodes, delete_nodes) if task_name == 'ObsFactor' else fusion_nodes
 
     def thread_validate_task(cluster_key, cluster_value):
         if cluster_key == -1:
@@ -254,13 +380,13 @@ def generic_cluster_identify(
             print(f"Error evaluating cluster [{cluster_key}]: {e}")
             return cluster_key, cluster_value, None
 
-    for round_idx in range(MAX_ROUNDS):
+    for round_idx in range(max_rounds):
         round_desc = "Initial Phase" if round_idx == 0 else f"Re-clustering Round {round_idx}"
         print(f"\n=== Starting {task_name} {round_desc} ===")
         next_round_nodes = []
         llm_results = []
 
-        with ThreadPoolExecutor(max_workers=20) as executor:
+        with ThreadPoolExecutor(max_workers=get_setting('fusion.workers')) as executor:
             futures = [executor.submit(thread_validate_task, k, v) for k, v in current_clusters.items()]
             for future in tqdm(as_completed(futures), total=len(futures), desc=f"{round_desc} Validation"):
                 try:
@@ -289,20 +415,25 @@ def generic_cluster_identify(
             if not valid_group_nodes:
                 continue
 
+            for field in ('cluster_geo_name', 'cluster_geo_type', 'cluster_impact_type',
+                          'cluster_sensor_type', 'cluster_platform'):
+                if hasattr(cluster_ok, field):
+                    setattr(cluster_ok, field, english_term(
+                        getattr(cluster_ok, field), strict=field != 'cluster_geo_name'))
             cluster_name = getattr(cluster_ok, attr_map['cluster_name'], '')
             is_valid_cluster = False
 
-            if task_name == '地物':
+            if task_name == 'GeoObject':
                 is_valid_cluster = bool(
                     cluster_name and getattr(cluster_ok, 'cluster_geo_type', None) and getattr(cluster_ok,
                                                                                                'cluster_geometry',
                                                                                                None))
-            elif task_name == '传感器':
+            elif task_name == 'Sensor':
                 is_valid_cluster = bool(
                     cluster_name and getattr(cluster_ok, 'cluster_sensor_type', None) and getattr(cluster_ok,
                                                                                                   'cluster_platform',
                                                                                                   None))
-            elif task_name == '因子':
+            elif task_name == 'ObsFactor':
                 is_valid_cluster = bool(cluster_name and getattr(cluster_ok, 'cluster_factor_type', None))
             else:
                 is_valid_cluster = bool(cluster_name and getattr(cluster_ok, 'cluster_impact_type', None))
@@ -319,7 +450,7 @@ def generic_cluster_identify(
             else:
                 next_round_nodes.extend(valid_group_nodes)
 
-        if round_idx < MAX_ROUNDS - 1:
+        if round_idx < max_rounds - 1:
             if not next_round_nodes:
                 break
             print(f"🔄 Re-clustering {len(next_round_nodes)} remaining nodes...")
@@ -327,8 +458,8 @@ def generic_cluster_identify(
             current_clusters = get_dbscan_cluster(
                 texts=texts_for_clustering,
                 all_info=next_round_nodes,
-                eps=0.15,
-                min_samples=2
+                eps=get_setting('fusion.dbscan.eps'),
+                min_samples=get_setting('fusion.dbscan.min_samples')
             )
         else:
             print("Reached maximum retry rounds.")
@@ -341,7 +472,7 @@ def generic_cluster_identify(
             else:
                 fusion_nodes[node_name]['origin_nodes'].append(node_n)
 
-    return (fusion_nodes, delete_nodes) if task_name == '因子' else fusion_nodes
+    return (fusion_nodes, delete_nodes) if task_name == 'ObsFactor' else fusion_nodes
 
 
 def geo_cluster_identify(clusters: dict):
@@ -371,7 +502,7 @@ def impact_cluster_identify(clusters: dict):
     """
     return generic_cluster_identify(
         clusters=clusters,
-        task_name="DisPhen",
+        task_name="Impact",
         validate_func=impact_is_cluster_ok,
         extract_name_func=lambda x: x[0],
         construct_node_func=lambda res: [res.cluster_impact_name, res.cluster_impact_type],
@@ -436,9 +567,14 @@ def geo_fusion_in_graph(fusion_geo_nodes: dict):
 
     for key, value in fusion_geo_nodes.items():
         if value['clustered_node']:
+            key = english_term(key)
+            geo_type = english_term(value['clustered_node'][1], strict=True)
+            if not geo_type:
+                print(f'[Geo fusion skipped] {key!r}: no English geographic type.')
+                continue
             f_geo_node = GeoObject.nodes.first_or_none(geo_object_name=key)
             if not f_geo_node:
-                f_geo_node = GeoObject(geo_object_name=value['clustered_node'][0], geo_type=value['clustered_node'][1],
+                f_geo_node = GeoObject(geo_object_name=english_term(value['clustered_node'][0]), geo_type=geo_type,
                                        geometry=value['clustered_node'][2]).save()
             if len(value['origin_nodes']) > 1:
                 for v in value['origin_nodes']:
@@ -446,7 +582,7 @@ def geo_fusion_in_graph(fusion_geo_nodes: dict):
                     if o_geo_node:
                         merge_nodes(o_geo_node, f_geo_node, 'GeoObject')
             else:
-                f_geo_node.geo_type = value['clustered_node'][1]
+                f_geo_node.geo_type = geo_type
                 f_geo_node.geometry = value['clustered_node'][2]
                 f_geo_node.save()
 
@@ -460,15 +596,19 @@ def impact_fusion_in_graph(fusion_impact_nodes: dict):
 
     for key, value in fusion_impact_nodes.items():
         if value['clustered_node']:
-            f_impact_node = DisPhen.nodes.first_or_none(impact_name=key)
+            impact_type = english_term(value['clustered_node'][1], strict=True)
+            if not impact_type:
+                print(f'[Impact fusion skipped] {key!r}: no English impact type.')
+                continue
+            f_impact_node = Impact.nodes.first_or_none(impact_name=key)
             if not f_impact_node:
-                f_impact_node = DisPhen(impact_name=value['clustered_node'][0],
-                                        impact_type=value['clustered_node'][1]).save()
+                f_impact_node = Impact(impact_name=value['clustered_node'][0],
+                                        impact_type=impact_type).save()
             if len(value['origin_nodes']) > 1:
                 for v in value['origin_nodes']:
-                    o_impact_node = DisPhen.nodes.first_or_none(impact_name=v[0])
+                    o_impact_node = Impact.nodes.first_or_none(impact_name=v[0])
                     if o_impact_node:
-                        merge_nodes(o_impact_node, f_impact_node, 'DisPhen')
+                        merge_nodes(o_impact_node, f_impact_node, 'Impact')
 
 
 def sensor_fusion_in_graph(fusion_sensor_nodes: dict):
@@ -480,18 +620,23 @@ def sensor_fusion_in_graph(fusion_sensor_nodes: dict):
 
     for key, value in fusion_sensor_nodes.items():
         if value['clustered_node']:
+            sensor_type = english_term(value['clustered_node'][1], strict=True)
+            platform = english_term(value['clustered_node'][2], strict=True)
+            if not sensor_type or not platform:
+                print(f'[Sensor fusion skipped] {key!r}: no English sensor type or platform.')
+                continue
             f_sensor_node = Sensor.nodes.first_or_none(sensor_name=key)
             if not f_sensor_node:
-                f_sensor_node = Sensor(sensor_name=value['clustered_node'][0], sensor_type=value['clustered_node'][1],
-                                       platform=value['clustered_node'][2]).save()
+                f_sensor_node = Sensor(sensor_name=value['clustered_node'][0], sensor_type=sensor_type,
+                                       platform=platform).save()
             if len(value['origin_nodes']) > 1:
                 for v in value['origin_nodes']:
                     o_sensor_node = Sensor.nodes.first_or_none(sensor_name=v[0])
                     if o_sensor_node:
                         merge_nodes(o_sensor_node, f_sensor_node, 'Sensor')
             else:
-                f_sensor_node.sensor_type = value['clustered_node'][1]
-                f_sensor_node.platform = value['clustered_node'][2]
+                f_sensor_node.sensor_type = sensor_type
+                f_sensor_node.platform = platform
                 f_sensor_node.save()
 
 
@@ -785,7 +930,7 @@ def geo_fusion():
     geo_names = [geo_node.geo_object_name for geo_node in geo_nodes]
     geo_info = [[geo_node.geo_object_name, geo_node.geo_type, geo_node.geometry] for geo_node in geo_nodes]
 
-    clusters = get_dbscan_cluster(geo_names, geo_info, 0.15)
+    clusters = get_dbscan_cluster(geo_names, geo_info)
     if clusters:
         geo_clusters = geo_cluster_identify(clusters)
         geo_fusion_in_graph(geo_clusters)
@@ -794,16 +939,16 @@ def geo_fusion():
 def impact_fusion():
     """
     High-level function that triggers the DBSCAN clustering, LLM verification,
-    and graph database fusion pipeline for DisPhen nodes.
+    and graph database fusion pipeline for Impact nodes.
     """
-    impact_nodes = DisPhen.nodes.all()
+    impact_nodes = Impact.nodes.all()
     if not impact_nodes:
         return
 
     impact_names = [impact_node.impact_name for impact_node in impact_nodes]
     impact_info = [[impact_node.impact_name, impact_node.impact_type] for impact_node in impact_nodes]
 
-    clusters = get_dbscan_cluster(impact_names, impact_info, 0.15)
+    clusters = get_dbscan_cluster(impact_names, impact_info)
     if clusters:
         impact_clusters = impact_cluster_identify(clusters)
         impact_fusion_in_graph(impact_clusters)
@@ -821,7 +966,7 @@ def factor_fusion():
     factor_names = [factor_node.factor_name for factor_node in factor_nodes]
     factor_info = [[factor_node.factor_name, factor_node.factor_type] for factor_node in factor_nodes]
 
-    clusters = get_dbscan_cluster(factor_names, factor_info, 0.15)
+    clusters = get_dbscan_cluster(factor_names, factor_info)
     if clusters:
         factor_clusters, d_nodes = factor_cluster_identify(clusters)
         factor_fusion_in_graph(factor_clusters)
@@ -841,7 +986,7 @@ def sensor_fusion():
     sensor_info = [[sensor_node.sensor_name, sensor_node.sensor_type, sensor_node.platform]
                    for sensor_node in sensor_nodes]
 
-    clusters = get_dbscan_cluster(sensor_names, sensor_info, 0.15)
+    clusters = get_dbscan_cluster(sensor_names, sensor_info)
     if clusters:
         sensor_clusters = sensor_cluster_identify(clusters)
         sensor_fusion_in_graph(sensor_clusters)
@@ -875,11 +1020,13 @@ def obs_event_fusion():
     obs_event_fusion_in_graph(event_clusters)
 
 
-def relation_deduplication_count(relation_to_count: str = "CAUSE", batch_size: int = 1000):
+def relation_deduplication_count(relation_to_count: str = "CAUSE", batch_size: int = None):
     """
     Uses APOC periodic iterate to find duplicate relationships of a specified type,
     aggregates their weights into a single relation count, and deletes redundancies.
     """
+    if batch_size is None:
+        batch_size = get_setting('fusion.deduplication_batch_size')
     cypher_weighted_dedupe = f"""
             CALL apoc.periodic.iterate(
                 "MATCH (s)-[r]->(t) 
@@ -904,12 +1051,14 @@ def relation_deduplication_count(relation_to_count: str = "CAUSE", batch_size: i
 
 def relation_deduplication(relation_to_count_1: str = 'CAUSE', relation_to_count_2: str = 'TRIGGER',
                            relation_to_inter: str = "SPATIAL",
-                           batch_size: int = 1000):
+                           batch_size: int = None):
     """
     Orchestrates relationship deduplication across the graph, applying weighted summation
     for causal/trigger relations, string merging for spatial relations, and simple deduplication
     for all others.
     """
+    if batch_size is None:
+        batch_size = get_setting('fusion.deduplication_batch_size')
     relation_deduplication_count(relation_to_count_1, batch_size)
     relation_deduplication_count(relation_to_count_2, batch_size)
 
@@ -958,33 +1107,4 @@ def relation_deduplication(relation_to_count_1: str = 'CAUSE', relation_to_count
         print(f"Standard relation deduplication failed: {e}")
         return
 
-    print("\n⭐ 所有关系后处理完成。")
-
-
-if __name__ == "__main__":
-    # neo = Neo4jDatabaseConnector("events-all-1-mini")
-
-    # 论元节点融合
-    geo_fusion()
-    impact_fusion()
-    factor_fusion()
-    sensor_fusion()
-
-    # 事件节点融合
-    disaster_event_fusion()
-    obs_event_fusion()
-
-    # 关系去重
-    relation_deduplication()
-
-    with open("fusion_geo_nodes.pickle", "rb") as f:
-        clusters = pickle.load(f)
-    print(clusters)
-    # factor_fusion_in_graph(factor_clusters)
-    # factor_delete_in_graph(d_nodes)
-
-    with open("fusion_sensor_nodes.pickle", "rb") as f:
-        clusters = pickle.load(f)
-    print(clusters)
-    sensor_fusion_in_graph(clusters)
-    print(get_ollama_embedding("111"))
+    print("\n⭐ All relationship post-processing completed.")

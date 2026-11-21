@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / 'src'))
 sys.path.insert(0, str(PROJECT_ROOT / 'instantiation_validation'))
 
@@ -32,13 +33,22 @@ def run_comparison(config, overwrite=False):
 def main():
     """Run an OELG baseline, draw its maps, or compare existing maps."""
     parser = argparse.ArgumentParser(description='Instance graph instantiation_validation and method comparison')
-    parser.add_argument('-t', '--task', required=True, choices=['instantiate', 'map', 'compare'])
+    parser.add_argument('-t', '--task', required=True, choices=['instantiate', 'map', 'compare', 'reproduce', 'patterns'])
     parser.add_argument('--config', type=Path, help='Configuration file for the selected task')
     parser.add_argument('--no-plots', action='store_true', help='Skip PNG generation')
     parser.add_argument('--output-dir', type=Path, help='OELG audit output or map output directory')
     parser.add_argument('--overwrite', action='store_true', help='Replace existing comparison outputs')
     args = parser.parse_args()
-    if args.task == 'compare':
+    if args.task in ('reproduce', 'patterns'):
+        from paper_experiment import pattern_summary, reproduce
+        if args.task == 'patterns':
+            if args.no_plots or args.output_dir or args.overwrite:
+                parser.error('patterns only accepts --config')
+            import json
+            print(json.dumps(pattern_summary(args.config), indent=2))
+        else:
+            reproduce(args.config, args.output_dir, args.no_plots, args.overwrite)
+    elif args.task == 'compare':
         if args.no_plots or args.output_dir:
             parser.error('--no-plots and --output-dir are only available for OELG tasks')
         run_comparison(args.config or PROJECT_ROOT / 'instantiation_validation' / 'importance_comparison_config.json', args.overwrite)

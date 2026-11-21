@@ -112,7 +112,7 @@ def print_performance_table(shot_list, base_dir, methods=["default", "code"]):
     recall, and F1 scores of different extraction methods across various few-shot settings.
     """
     print("\n" + "=" * 90)
-    print(f"{'参考案例数量':^15} | {'方法':^12} | {'准确率 (Prec)':^15} | {'召回率 (Rec)':^15} | {'F1 Score':^15}")
+    print(f"{'Few-shot count':^15} | {'Method':^12} | {'Precision':^15} | {'Recall':^15} | {'F1 Score':^15}")
     print("-" * 90)
 
     for shot in shot_list:
@@ -170,8 +170,6 @@ def plot_combined_relation_comparison(shot_list, base_dir, output_dir=None):
 
     if Path(font_path).exists():
         prop = fm.FontProperties(fname=font_path)
-        import matplotlib.font_manager as fm
-
         font_path = 'C:/Windows/Fonts/msyh.ttc'
 
         if Path(font_path).exists():
@@ -180,7 +178,7 @@ def plot_combined_relation_comparison(shot_list, base_dir, output_dir=None):
             plt.xlabel('参考案例数量 (Number of Few-shot Samples)', fontproperties=prop, fontsize=12)
             plt.ylabel('F1 Score', fontproperties=prop, fontsize=12)
         else:
-            print("未找到指定字体路径，请检查 C:/Windows/Fonts/")
+            print("Font not found; check C:/Windows/Fonts/")
     else:
         plt.title('Event Relation Extraction Performance (F1 Score)', fontsize=14, pad=10)
         plt.xlabel('Number of Few-shot Samples', fontsize=12)

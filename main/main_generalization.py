@@ -3,22 +3,18 @@ import os
 import sys
 import time
 import pickle
-import json
-import concurrent.futures
-from tqdm import tqdm
 
 # Ensure correct package imports based on project structure
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
+from src.construct_config import configure_from_cli, get_config_path, get_configured_path, get_setting
+
+configure_from_cli()
+
 # Import ontology components and graph connectors
-from ontology.neo4jmodel import (
-    Neo4jDatabaseConnector, GeoObject, DisPhen, DisasterEvent, OriginText, Geometry,
-    MergeDisasterEvent, GlobalDisasterEvent, EnvironmentDescription, ObservationEvent,
-    GlobalObservationEvent, MergeObservationEvent, GeneralizedObservationEvent, Sensor,
-    Factor, GeneralizedObservationPattern, EnvironmentRule, StandardFactor
-)
+from ontology.neo4jmodel import Neo4jDatabaseConnector
 
 # Import generalization scripts and logic
 from generalization import (
@@ -33,7 +29,7 @@ from generalization import (
     find_top_influence_disasters, find_top_hub_disasters, connect_disaster_trigger_relate_obs,
     export_disaster_observation_to_json
 )
-from other.factor_map import main_factor_map_parallel_1, main_factor_map_
+from other.factor_map import main_factor_map_parallel_1
 
 
 # ==========================================
@@ -64,7 +60,7 @@ def run_disaster_generalization(workers):
 
     print("-> Step 4/4: Calculating global causal confidence and ranking top pairs...")
     calculate_global_event_causal_confidence()
-    output_top_causal_pairs(50)
+    output_top_causal_pairs(get_setting('generalization.statistics.causal_top_n'))
 
     print(f"✅ Disaster Event Generalization completed in: {time.time() - start_time:.2f} seconds")
     return disaster_pair_clustered
@@ -86,7 +82,7 @@ def run_spatial_and_env_rules(disaster_pair_clustered, workers):
 
     if not disaster_pair_clustered:
         # Load from disk if running this step in isolation
-        pickle_path = "all-cluster.pickle"
+        pickle_path = get_configured_path('generalization.paths.clusters')
         if os.path.exists(pickle_path):
             print(f"Loading clusters from {pickle_path}...")
             with open(pickle_path, "rb") as f:
@@ -140,7 +136,7 @@ def run_observation_generalization(neo_connector, workers):
 
     # Step 4 & 5: Constructing New Generalized Observations
     print("-> Step 4/6: Extracting baseline standard factor observations...")
-    extract_standard_factor_observations("data/standard_factor_observations_1.json")
+    extract_standard_factor_observations()
 
     print("-> Step 5/6: Constructing new public observation events for coverage gaps...")
     construct_observation_events_all()
@@ -169,8 +165,9 @@ def run_statistics():
     print("-> Executing: Disaster Pattern Frequency Analytics...")
     pattern_statistics()
 
-    print("\n-> Executing: Multi-hop Causal Chain Extraction (Top 100 paths, 3 hops)...")
-    extract_typical_key_paths(hops=3, top_n=100)
+    path_settings = get_setting('generalization.statistics.paths')
+    print(f"\n-> Executing: Multi-hop Causal Chain Extraction (Top {path_settings['top_n']} paths, {path_settings['hops']} hops)...")
+    extract_typical_key_paths(hops=path_settings['hops'], top_n=path_settings['top_n'])
 
     print("\n-> Executing: Global Graph Degree and Hub Analytics...")
     analyze_disaster_and_observation_stats()
@@ -178,7 +175,7 @@ def run_statistics():
     find_top_hub_disasters()
 
     print("\n-> Executing: Exporting Disaster-Observation hierarchies to JSON...")
-    export_disaster_observation_to_json("data/disaster_observations_export_final.json")
+    export_disaster_observation_to_json()
 
     print(f"✅ Statistical Output completed in: {time.time() - start_time:.2f} seconds")
     return True
@@ -216,16 +213,22 @@ def main():
     )
 
     parser.add_argument(
+        '--config',
+        default=str(get_config_path()),
+        help="Construction configuration file (default: construct_config.json in the project root)"
+    )
+
+    parser.add_argument(
         '-w', '--workers',
         type=int,
-        default=20,
-        help="Thread concurrency pool worker boundary constraint (Default: 20)"
+        default=get_setting('generalization.workers'),
+        help="Thread pool size; overrides generalization.workers in the configuration"
     )
 
     parser.add_argument(
         '-db', '--database',
         type=str,
-        default='events-logic-all',
+        default=get_setting('generalization.database'),
         help="The Neo4j database name to connect to."
     )
 

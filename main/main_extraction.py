@@ -3,7 +3,6 @@ import os
 import sys
 import time
 import json
-import re
 import concurrent.futures
 from tqdm import tqdm
 
@@ -11,14 +10,21 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
+from src.construct_config import (
+    configure_from_cli, get_config_path, get_configured_path, get_setting, resolve_project_path
+)
+from src.graph_language import english_disaster, english_observation, english_term
+from src.other.causal_relation_rules import classify_event_cause, enforce_existing_causal_rules
+
+configure_from_cli()
+
 from event_extraction import (
     event_extraction_combined,
     parse_disaster_results,
     parse_observation_results,
     update_D_argument_relations,
     _worker_cause_relation,
-    _worker_trigger_relation,
-    llm
+    _worker_trigger_relation
 )
 
 from geo_extraction import (
@@ -30,8 +36,6 @@ from geo_extraction import (
         main_calculate_spatial_relations
 )
 
-from langchain_core.prompts import ChatPromptTemplate
-
 from ontology.neo4jmodel import (
     Neo4jDatabaseConnector,
     DisasterEvent,
@@ -42,7 +46,7 @@ from ontology.neo4jmodel import (
     Factor,
     Sensor,
     ObservationEvent,
-    DisPhen,
+    Impact,
     ObservationPattern
 )
 
@@ -68,6 +72,10 @@ def insert_database(disaster: dict, origin_text: str, title: str, event_num: int
     Ingests a parsed disaster event dictionary into the Neo4j graph database.
     Creates and links OriginText, GeoObject, TargetImpactNode, Factor, Time, and DisasterEvent nodes.
     """
+    disaster = english_disaster(disaster)
+    if not disaster['feature'].get('geo_type') or not disaster['impact'].get('impact_type'):
+        print(f'[Disaster skipped] Record {event_num}: an English argument category is unavailable.')
+        return 0
     origin_text_node = OriginText.nodes.first_or_none(text_content=origin_text)
     if not origin_text_node:
         origin_text_node = OriginText(text_content=origin_text, text_title=title).save()
@@ -80,10 +88,10 @@ def insert_database(disaster: dict, origin_text: str, title: str, event_num: int
             geometry=disaster["feature"]["geometry"]
         ).save()
 
-    impact_node = DisPhen.nodes.first_or_none(impact_name=disaster["impact"]["name"],
+    impact_node = Impact.nodes.first_or_none(impact_name=disaster["impact"]["name"],
                                                        impact_type=disaster["impact"]["impact_type"])
     if not impact_node:
-        impact_node = DisPhen(impact_name=disaster["impact"]["name"],
+        impact_node = Impact(impact_name=disaster["impact"]["name"],
                                        impact_type=disaster["impact"]["impact_type"]).save()
 
     if not geo_node.happen.is_connected(impact_node):
@@ -116,6 +124,7 @@ def insert_database(disaster: dict, origin_text: str, title: str, event_num: int
     event_node.origin.connect(origin_text_node)
 
     update_D_argument_relations(event_node)
+    return 1
 
 
 def insert_database_obs(observation: dict, origin_text: str, event_num: int):
@@ -123,6 +132,7 @@ def insert_database_obs(observation: dict, origin_text: str, event_num: int):
     Ingests a parsed observation event dictionary into the Neo4j graph database.
     Creates and links Sensor, GeoObject, Factor, Time, and ObservationEvent nodes[cite: 17].
     """
+    observation = english_observation(observation)
     sensor = observation.get("sensor", {})
     sensor_name, sensor_type, sensor_platform = "", "", ""
     if isinstance(sensor, dict):
@@ -139,7 +149,8 @@ def insert_database_obs(observation: dict, origin_text: str, event_num: int):
                              platform=sensor_platform).save()
 
     if not sensor_node:
-        return
+        print(f'[Observation skipped] Record {event_num}: sensor name, English type, or platform is missing.')
+        return 0
 
     observed_object = observation.get("observed_object", {})
     observed_object_name, observed_object_type, observed_object_geometry = "", "", ""
@@ -168,7 +179,8 @@ def insert_database_obs(observation: dict, origin_text: str, event_num: int):
                 factor_nodes.append(factor_node)
 
     if not geo_node and len(factor_nodes) == 0:
-        return
+        print(f'[Observation skipped] Record {event_num}: no valid observed object or factor.')
+        return 0
 
     origin_text_node = OriginText.nodes.first_or_none(text_content=origin_text)
     if not origin_text_node:
@@ -226,6 +238,9 @@ def insert_database_obs(observation: dict, origin_text: str, event_num: int):
 
         if time_node and not event_node.occurred_at.is_connected(time_node):
             event_node.occurred_at.connect(time_node)
+        obs_events.append(event_node)
+
+    return len(obs_events)
 
 
 # ==========================================
@@ -360,9 +375,11 @@ def run_geo_extraction(input_dir, max_workers):
                     collected_data.append(res)
 
         if collected_data:
+            written = 0
             for item in collected_data:
-                insert_database_geo(item['results'], item['original_text'], item['title_key'])
-            print(f"✅ Geo objects for {os.path.basename(file)} ingested.")
+                written += bool(insert_database_geo(item['results'], item['original_text'], item['title_key']))
+            print(f"Geo processing complete for {os.path.basename(file)}: "
+                  f"{written} text records written, {len(collected_data) - written} skipped.")
 
 
 # ==========================================
@@ -434,13 +451,20 @@ def run_event_extraction(input_dir, max_workers):
                     collected_data.append(res)
 
         if collected_data:
+            disaster_count = observation_count = skipped = 0
             for item in collected_data:
                 for dis in item['disasters']:
                     if dis.get('feature') and dis.get('impact'):
-                        insert_database(dis, item['original_text'], item['title_key'], item['index'])
+                        count = insert_database(dis, item['original_text'], item['title_key'], item['index'])
+                        disaster_count += count
+                        skipped += count == 0
                 for obs in item['observations']:
-                    insert_database_obs(obs, item['original_text'], item['index'])
-            print(f"✅ Events for {os.path.basename(file)} ingested.")
+                    count = insert_database_obs(obs, item['original_text'], item['index'])
+                    observation_count += count
+                    skipped += count == 0
+            print(f"Event processing complete for {os.path.basename(file)}: "
+                  f"{disaster_count} disaster events, {observation_count} observation events written; "
+                  f"{skipped} candidate events skipped.")
 
 
 # ==========================================
@@ -455,6 +479,10 @@ def run_relation_recognition(max_workers):
     print(f"\n{'=' * 50}")
     print(f"🔗 [PHASE 3] Starting Event Relation Recognition (Cause & Trigger)")
     print(f"{'=' * 50}")
+
+    existing = enforce_existing_causal_rules(DisasterEvent.nodes.all())
+    print(f"Appendix E: {existing['removed']} existing CAUSE edges removed; "
+          f"{existing['updated']} classified as Immediate/Altering.")
 
     text_nodes = list(OriginText.nodes.all())
     cause_tasks = []
@@ -530,18 +558,26 @@ def run_relation_recognition(max_workers):
 
     # DB Ingestion (Main Thread)
     print(f"-> Syncing {len(final_cause_jobs)} Cause and {len(final_trigger_jobs)} Trigger edges to Neo4j...")
+    filtered_cause_jobs = 0
     for job in final_cause_jobs:
         h_id, t_id = job.get('head_id'), job.get('tail_id')
         if h_id and t_id:
             e1 = DisasterEvent.nodes.first_or_none(node_id=h_id)
             e2 = DisasterEvent.nodes.first_or_none(node_id=t_id)
             if e1 and e2:
+                metadata = classify_event_cause(e1, e2)
+                if metadata is None:
+                    filtered_cause_jobs += 1
+                    print(f'[Causal rule skipped] {e1.event_description} -> {e2.event_description}')
+                    continue
                 if not e1.cause.is_connected(e2):
-                    e1.cause.connect(e2, {'evidence': job['evidence'], 'relation_count': 1})
+                    e1.cause.connect(e2, {'evidence': job['evidence'], 'relation_count': 1, **metadata})
                 else:
                     rel = e1.cause.relationship(e2)
                     rel.relation_count = (rel.relation_count or 1) + 1
                     rel.evidence = (rel.evidence or "") + " || " + job['evidence']
+                    for key, value in metadata.items():
+                        setattr(rel, key, value)
                     rel.save()
 
     for job in final_trigger_jobs:
@@ -558,7 +594,7 @@ def run_relation_recognition(max_workers):
                     rel.evidence = (rel.evidence or "") + " || " + job['evidence']
                     rel.save()
 
-    print("✅ Relation Recognition completed.")
+    print(f'Relation recognition completed: {filtered_cause_jobs} candidate CAUSE edges rejected by Appendix E.')
 
 
 def run_extraction_pipeline(input_dir, max_workers):
@@ -606,6 +642,9 @@ def run_fusion():
 
     print("\n-> [FUSION STEP 3/3] Deduplicating and Aggregating Relations...")
     relation_deduplication()
+    summary = enforce_existing_causal_rules(DisasterEvent.nodes.all())
+    print(f"Appendix E after fusion: {summary['removed']} CAUSE edges removed; "
+          f"{summary['updated']} classified as Immediate/Altering.")
 
     print(f"\n✅ Complete fusion pipeline finished in: {time.time() - start_time:.2f} seconds")
     return True
@@ -756,19 +795,21 @@ def run_obs_pattern(max_workers):
                         obs_node = ObservationEvent.nodes.get(node_id=res['obs_id'])
                         dis_node = DisasterEvent.nodes.get(node_id=res['dis_id'])
                         pat = res['pattern']
+                        weather_effect = english_term(pat.weather_effect, strict=True)
+                        obs_position = english_term(pat.obs_position, strict=True)
 
                         obsPat_node = ObservationPattern.nodes.first_or_none(
                                 space_res=pat.space_res,
                                 time_res=pat.time_res,
-                                weather_effect=pat.weather_effect,
-                                obs_position=pat.obs_position
+                                weather_effect=weather_effect,
+                                obs_position=obs_position
                         )
                         if not obsPat_node:
                                 obsPat_node = ObservationPattern(
                                         space_res=pat.space_res,
                                         time_res=pat.time_res,
-                                        weather_effect=pat.weather_effect,
-                                        obs_position=pat.obs_position
+                                        weather_effect=weather_effect,
+                                        obs_position=obs_position
                                 ).save()
 
                         obsPat_did = obsPat_node.disaster_ids if obsPat_node.disaster_ids else []
@@ -791,7 +832,7 @@ def run_obs_pattern(max_workers):
 # 9. GEO ENCODING & SPATIAL RELATION COMPUTATION
 # ==========================================
 
-def run_spatial_computation(max_workers):
+def run_spatial_computation(max_workers, neo_connector):
     """
     Computes geographical encoding coordinates via APIs and evaluates topological,
     distance, and basin routing relationships for causally linked events[cite: 20].
@@ -807,10 +848,10 @@ def run_spatial_computation(max_workers):
 
     print("\n-> Step 2/3: Generating Geo-Encodings for Event Pairs...")
     # Performs encoding and updates the coordinates in DB
-    event_pair_geo_encoding_parallel(geo_is_location, do_encoding=True)
+    event_pair_geo_encoding_parallel(geo_is_location, do_encoding=get_setting('geocoding.do_encoding'))
 
     print("\n-> Step 3/3: Calculating Semantic Spatial Relations (Distance, Topology, Basin)...")
-    main_calculate_spatial_relations()
+    main_calculate_spatial_relations(neo_connector)
 
     print(f"\n✅ Geographic Encoding and Spatial Relations completed in: {time.time() - start_time:.2f} seconds")
     return True
@@ -821,6 +862,7 @@ def run_spatial_computation(max_workers):
 # ==========================================
 
 def main():
+    """Run the selected construction stage using configuration defaults and CLI overrides."""
     parser = argparse.ArgumentParser(
         description="Standardized Command Line Toolkit for Knowledge Graph Extraction, Ingestion, and Fusion.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -845,27 +887,34 @@ def main():
     )
 
     parser.add_argument(
+        '--config',
+        default=str(get_config_path()),
+        help="Construction configuration file (default: construct_config.json in the project root)"
+    )
+
+    parser.add_argument(
         '-i', '--input_dir',
         type=str,
-        default='./data/extraction_source_dataset/originText-wiki-1',
+        default=get_configured_path('extraction.input_dir'),
         help="Input folder hosting chunked target JSON files (Applies only to 'extract' or 'all')"
     )
 
     parser.add_argument(
         '-w', '--workers',
         type=int,
-        default=20,
-        help="Thread concurrency pool worker boundary constraint (Default: 20)"
+        default=get_setting('extraction.workers'),
+        help="Thread pool size; overrides extraction.workers in the configuration"
     )
 
     parser.add_argument(
         '-db', '--database',
         type=str,
-        default='test-1',
+        default=get_setting('extraction.database'),
         help="The Neo4j database name to connect to."
     )
 
     args = parser.parse_args()
+    args.input_dir = str(resolve_project_path(args.input_dir))
     overall_start = time.time()
 
     print(f"Connecting to Neo4j database: {args.database}...")
@@ -888,7 +937,7 @@ def main():
         run_obs_pattern(args.workers)
 
     elif args.task == 'spatial':
-        run_spatial_computation(args.workers)
+        run_spatial_computation(args.workers, neo_connector)
 
     elif args.task == 'all':
         print("\n🚀 [Pipeline Mode] Initiating End-to-End Graph Generation Pipeline...")
@@ -899,7 +948,7 @@ def main():
         run_fusion()
         run_env_description(args.workers)
         run_obs_pattern(args.workers)
-        run_spatial_computation(args.workers)
+        run_spatial_computation(args.workers, neo_connector)
 
         print(
             f"\n🎉 [Pipeline Mode] Production run completed successfully! Total elapsed time: {time.time() - overall_start:.2f} seconds")

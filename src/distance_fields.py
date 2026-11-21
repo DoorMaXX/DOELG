@@ -995,13 +995,15 @@ def run(config_path, snapshot_path=None, output_dir=None, no_plots=False, databa
             configure_plot_style()
         outputs = export_fields(events,factors,grid,config,out)
         cell_histogram = export_cell_importance_histogram(factors,grid,config,out)
-        manifest = dict(config=config,source_database=snapshot.get('database'),display_scale=display_scale,
+        graph_source = snapshot.get('graph_source', {})
+        manifest = dict(config=config,source_database=snapshot.get('database') or graph_source.get('database'),
+                        graph_source=graph_source,display_scale=display_scale,
                         cell_importance_histogram=cell_histogram,
                         initial_events_included=snapshot.get('initial_events_included',False),
                         initial_event_count=snapshot.get('initial_event_count'),
                         geo_type_importance=geo_type_importance,
                         captured_at=snapshot.get('captured_at'),statistics=statistics,
-                        score_formula='max(probability * importance) * path_boost ** (n_paths - 1)',
+                        score_formula=snapshot.get('score_formula', 'max(probability * importance) * path_boost ** (n_paths - 1)'),
                         spatial_formula=spatial_formula(config),
                         cutoff_status='initial configurable scale, not calibrated on instantiation_validation points',
                         source_snapshot=str(snapshot_file.resolve()),snapshot_sha256=file_hash(snapshot_file),

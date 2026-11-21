@@ -1,18 +1,21 @@
-from ontology.neo4jmodel import Neo4jDatabaseConnector, ObservationEvent, ObservationPattern, DisasterEvent, Factor
+from ontology.neo4jmodel import Neo4jDatabaseConnector, ObservationPattern, DisasterEvent, Factor
+from src.graph_language import english_term
 from geo_extraction import llm
 from langchain.agents import create_agent
-from langchain_community.document_loaders import UnstructuredFileLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.tools import tool
 import pandas as pd
 from langchain_core.documents import Document
 import pickle
+from src.construct_config import get_configured_path, get_setting
 
 
 
-embeddings = OllamaEmbeddings(model="bge-m3")
+embeddings = OllamaEmbeddings(
+    model=get_setting('embeddings.sensor.model'),
+    base_url=get_setting('embeddings.sensor.base_url')
+)
 vector_db = None
 retriever = None
 
@@ -39,15 +42,16 @@ def build_vector_store(csv_path: str):
 
     vector_store = FAISS.from_documents(documents, embeddings)
 
-    vector_store.save_local("sensor_faiss_index")
+    vector_store.save_local(get_configured_path('sensor_manual.index_dir'))
     return vector_store
 
 
 def get_vector_store():
+    """Build the sensor manual vector store and retriever lazily from the active configuration."""
     global vector_db, retriever
     if vector_db is None:
-        vector_db = build_vector_store("./data/sensor_dataset/sensor_id.xlsx")
-        retriever = vector_db.as_retriever(search_kwargs={"k": 3})
+        vector_db = build_vector_store(get_configured_path('sensor_manual.input_file'))
+        retriever = vector_db.as_retriever(search_kwargs={"k": get_setting('sensor_manual.retrieval_k')})
     return vector_db
 
 @tool
@@ -56,6 +60,7 @@ def search_sensor_manual(query: str) -> str:
     Queries the vector store for technical parameters, resolution limits,
     weather adaptabilities, and observation modes of sensors based on a manual search query.
     """
+    get_vector_store()
     docs = retriever.invoke(query)
     return "\n\n".join([doc.page_content for doc in docs])
 
@@ -64,6 +69,10 @@ def get_event_obsPat_llm(text, obs_event_des, disaster_event_des):
     """
     Uses an LLM agent along with the sensor manual search tool to extract and deduce
     the spatial and temporal resolution, weather effects, and positioning of observation events.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See get_event_obsPat_llm_en for the English version.
     """
     sys_prompt = """
     你是一位地理空间传感网管理专家。给定一段【来源文本】和其中描述的一个由【灾害事件】所触发的【观测事件】，请从文本中分析并总结出导致该观测事件中传感器的“观测模式”。
@@ -83,7 +92,7 @@ def get_event_obsPat_llm(text, obs_event_des, disaster_event_des):
     """
 
     from pydantic import BaseModel, Field
-    from typing import List, Literal
+    from typing import Literal
 
     class EnvDesInfo(BaseModel):
         space_res: float = Field(
@@ -101,9 +110,56 @@ def get_event_obsPat_llm(text, obs_event_des, disaster_event_des):
         {"messages": [
             {"role": "user", "content": user_prompt}
         ]},
-        config={"recursion_limit": 30}
+        config={"recursion_limit": get_setting('sensor_manual.recursion_limit')}
     )
     return output["structured_response"]
+
+
+def get_event_obsPat_llm_en(text, obs_event_des, disaster_event_des):
+    """
+    Uses an LLM agent along with the sensor manual search tool to extract and deduce
+    the spatial and temporal resolution, weather effects, and positioning of observation events.
+    """
+    sys_prompt = """
+    You are a geospatial sensor network management expert. Given source text and an observation event triggered by a disaster event, analyze the sensor observation pattern.
+    Workflow:
+    1. Analyze the sensor observation-pattern description in the source text.
+    2. Use search_sensor_manual to retrieve the mentioned sensor technical parameters.
+    3. Output structured observation-pattern parameters.
+    4. If no exact model is found, explain using the text; do not speculate or repeatedly call the tool. Empty output is allowed.
+    5. **Once information is obtained, immediately generate the structured response and stop reasoning.**
+    """
+    user_prompt = f"""
+    [Source text]: {text}
+    [Disaster event]: {disaster_event_des}
+    [Observation event]: {obs_event_des}
+
+    Analyze the text and consult the manual for the sensor observation pattern:
+    """
+
+    from pydantic import BaseModel, Field
+    from typing import Literal
+
+    class EnvDesInfo(BaseModel):
+        space_res: float = Field(
+            description="Spatial resolution in meters; use -1 or infer logically if unavailable.")
+        time_res: float = Field(description="Temporal resolution in hours")
+        weather_effect: Literal[
+            'All-weather observation', 'Cloud or fog obstruction', 'Limited by illumination', 'Limited by extreme weather', 'Affected by atmospheric quality'] = Field(
+            description="Effect of weather on sensor observation")
+        obs_position: Literal['Nearby point observation', 'Uniformly distributed point observation', 'Remote sensing'] = Field(
+            description="Sensor observation coverage mode")
+        evidence: str = Field(description="Evidence for this observation pattern, including text excerpts and reasoning")
+
+    agent = create_agent(llm, system_prompt=sys_prompt, tools=[search_sensor_manual], response_format=EnvDesInfo)
+    output = agent.invoke(
+        {"messages": [
+            {"role": "user", "content": user_prompt}
+        ]},
+        config={"recursion_limit": get_setting('sensor_manual.recursion_limit')}
+    )
+    return output["structured_response"]
+
 
 
 def get_save_event_obsPat(obs_event_node, disaster_event_node):
@@ -126,8 +182,8 @@ def get_save_event_obsPat(obs_event_node, disaster_event_node):
     obs_pat = get_event_obsPat_llm(origin_text, obs_event_des, disaster_event_des)
     space_res = obs_pat.space_res
     time_res = obs_pat.time_res
-    weather_effect = obs_pat.weather_effect
-    obs_position = obs_pat.obs_position
+    weather_effect = english_term(obs_pat.weather_effect, strict=True)
+    obs_position = english_term(obs_pat.obs_position, strict=True)
     obsPat_node = ObservationPattern.nodes.first_or_none(space_res=space_res, time_res=time_res,
                                                          weather_effect=weather_effect, obs_position=obs_position)
     if not obsPat_node:
@@ -150,6 +206,10 @@ def factor_identify(factor: str):
     """
     Evaluates a given factor name using an LLM to determine if it meets the criteria
     of a valid observable attribute within a Sensor Web framework.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See factor_identify_en for the English version.
     """
     sys_prompt = f"""
         你是一名顶尖的**传感器网络本体（SSN）**专家，你的任务判断输入的名称是否是传感器的可观测因子（observable factor）。
@@ -179,6 +239,40 @@ def factor_identify(factor: str):
     return output["structured_response"]
 
 
+def factor_identify_en(factor: str):
+    """
+    Evaluates a given factor name using an LLM to determine if it meets the criteria
+    of a valid observable attribute within a Sensor Web framework.
+    """
+    sys_prompt = f"""
+        You are a Semantic Sensor Network (SSN) expert. Determine whether the input name is an observable factor for a sensor.
+        ### Role and objective
+        Strictly determine whether the input `factor`:
+        **Meets the definition**: is itself a valid observable property or characteristic.
+        ### Decision criteria (important)
+        ### Key rule: definition of an observable factor
+        An observable factor is a property or characteristic of the world directly or indirectly observed, measured, or sensed by a sensor. It must satisfy:
+        * **It is a property, not an entity or event.** For example, inundation extent, temperature, and precipitation are properties; flood and heavy rain are events; a river is an entity.
+        ### Input format
+        User input format: factor='name'.
+    """
+    from pydantic import BaseModel, Field
+
+    class InsertInfo(BaseModel):
+        is_factor: bool = Field(
+            description="Set to `True` if and only if the factor meets the abstract definition of an observable property.")
+        evidence: str = Field(
+            description="Evidence for whether the input is an observable factor"
+        )
+
+    agent = create_agent(llm, system_prompt=sys_prompt, response_format=InsertInfo)
+    output = agent.invoke(
+        {"messages": [{"role": "user", "content": f"factor=‘{factor}’"}]}
+    )
+    return output["structured_response"]
+
+
+
 def do_factor_delete():
     """
     Iterates through all factors in the database, uses the identification process to
@@ -197,20 +291,20 @@ def do_factor_delete():
         if not idf_factor.is_factor:
             delete_factors.append(factor_node)
 
-    filename = f'factor_delete_evidence.pickle'
+    filename = get_configured_path('sensor_manual.factor_delete_evidence', create_parent=True)
     try:
         with open(filename, 'wb') as file:
             pickle.dump(factor_delete_evidence, file)
-        print(f"成功将变量保存到 {filename}")
+        print(f"Saved data to {filename}")
     except Exception as e:
-        print(f"保存过程中发生错误: {e}")
+        print(f"Save failed: {e}")
 
     for df in delete_factors:
         df.delete()
 
 
 if __name__ == '__main__':
-    neo = Neo4jDatabaseConnector('events-do-fusion-2')
+    neo = Neo4jDatabaseConnector(get_setting('standalone.observation_database'))
     disaster_nodes = DisasterEvent.nodes.all()
     for de in disaster_nodes:
         observation_nodes = de.trigger.all()

@@ -222,7 +222,6 @@ class OELGInstantiationTests(unittest.TestCase):
         self.assertFalse(list(self.folder.rglob('*.png')))
 
     def test_identical_reference_raster_has_unit_iou(self):
-        import numpy as np
         import rasterio
         from rasterio.features import rasterize
         from rasterio.transform import from_bounds

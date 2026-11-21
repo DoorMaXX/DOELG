@@ -1,4 +1,5 @@
 import argparse
+import csv
 import shutil
 import sys
 from pathlib import Path
@@ -55,11 +56,38 @@ def run_plots(kind, base_dir, output_dir, shots):
     return plot_combined_relation_comparison(shots, base_dir, output_dir=output_dir)
 
 
+def run_table4(base_dir=None, output_path=None, shots=(1, 5, 10, 30)):
+    """Export all three Table 4 metrics using the original shared evaluation implementations."""
+    from extract_validation.validation_plot_e import calculate_event_metrics
+    from extract_validation.validation_plot_geo import calculate_geo_separated_metrics
+    from extract_validation.validation_plot_er import calculate_combined_metrics
+    base = Path(base_dir or PROJECT_ROOT / 'data/extraction_validation_dataset')
+    output = Path(output_path or base / 'results' / 'table4.csv')
+    rows = []
+    for shot in shots:
+        for method in ('default', 'code'):
+            filename = f'{method}-{shot}shot.xlsx'
+            rows.append(dict(shot=shot, method=method,
+                             geo_micro_f1=calculate_geo_separated_metrics(base / 'geo' / filename)[2][2],
+                             event_micro_f1=calculate_event_metrics(base / 'event' / filename)['f1'],
+                             event_relation_f1=calculate_combined_metrics(base / 'event_relation' / filename)[2]))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open('w', encoding='utf-8', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    for row in rows:
+        print(f"{row['shot']:2d}-shot {row['method']:7s}: Geo/Spatial={row['geo_micro_f1']:.3f}, "
+              f"Event={row['event_micro_f1']:.3f}, Relation={row['event_relation_f1']:.3f}")
+    print(f'Table 4 exported: {output}')
+    return rows
+
+
 def main():
     """Route extraction validation tasks from the command line."""
     parser = argparse.ArgumentParser(description='Prepare, evaluate, or plot extraction validation data')
-    parser.add_argument('-t', '--task', required=True, choices=['prepare', 'evaluate', 'plot'])
-    parser.add_argument('-k', '--kind', required=True, choices=['event', 'geo', 'relation'])
+    parser.add_argument('-t', '--task', required=True, choices=['prepare', 'evaluate', 'plot', 'table'])
+    parser.add_argument('-k', '--kind', choices=['event', 'geo', 'relation'], help='Required except for table')
     parser.add_argument('--input', type=Path, help='Input workbook for prepare or evaluate')
     parser.add_argument('--output', type=Path, help='New output workbook for prepare')
     parser.add_argument('--only-raw', action='store_true', help='Prepare predictions without ground truth')
@@ -67,6 +95,13 @@ def main():
     parser.add_argument('--output-dir', type=Path, help='Plot output directory')
     parser.add_argument('--shots', type=int, nargs='+', default=[1, 5, 10, 30])
     args = parser.parse_args()
+    if args.task == 'table':
+        if args.kind or args.input or args.only_raw or args.output_dir:
+            parser.error('table accepts --base-dir, --output, and --shots')
+        run_table4(args.base_dir, args.output, args.shots)
+        return
+    if args.kind is None:
+        parser.error('--kind is required for prepare, evaluate, and plot')
     if args.task in ('prepare', 'evaluate'):
         if args.input is None:
             parser.error('--input is required for prepare and evaluate')

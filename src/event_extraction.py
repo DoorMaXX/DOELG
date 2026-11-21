@@ -1,23 +1,16 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.agents import create_agent
-from ontology.neo4jmodel import Neo4jDatabaseConnector, GeoObject, DisPhen, DisasterEvent, OriginText, ObservationEvent
-import json
-import ast
+from src.construct_config import get_chat_model_options
+from ontology.neo4jmodel import DisasterEvent, ObservationEvent
 import re
 from datetime import datetime
-import textwrap
 
 """
 Disaster and observation event extraction,
 alongside disaster-causal and observation-triggering relationship identification.
 """
 
-llm = ChatOpenAI(temperature=0.3,
-                 model="deepseek-chat",
-                 openai_api_base="https://api.deepseek.com",
-                 openai_api_key="sk-184a85d7723a49dfbb7b2019c2f77e46")
+llm = ChatOpenAI(**get_chat_model_options('event'))
 
 
 geo_types = [
@@ -31,14 +24,67 @@ geo_types = [
     '通信线', '基站', '通信塔', '油气水输送管道', '储燃气罐', '水塔', '下水道', '窨井', '居民区',
     '公共管理与服务区', '商业区', '矿区', '仓库区', '绿地', '农业区', '公用设施区', '行政区'
 ]
+geo_types_en = [
+    'River', 'Lake', 'Basin', 'Islet',
+    'Shoal', 'Spring', 'Waterfall', 'Mountain', 'Cave', 'Sinkhole',
+    'Earth Bank', 'Valley', 'Sea', 'Coastline', 'Island', 'Farmland',
+    'Forest', 'Meadow', 'Sand', 'Wetland', 'Ditch', 'Reservoir',
+    'Pond', 'Water Well', 'Lock Gate', 'Dam', 'Dyke',
+    'Pumping Station', 'Flood Storage Area', 'Highway', 'Railway',
+    'Subway', 'Waterway', 'Bridge', 'Tunnel', 'Aerialway',
+    'Underpass', 'Underpass', 'Traffic Intersection', 'Train Station',
+    'Metro Station', 'Tram Station', 'Dock', 'Port', 'Lighthouse',
+    'Aerodrome', 'Apron', 'Underground Parking', 'Ground Parking',
+    'In-Building Parking', 'Bus Station', 'Charging Station',
+    'Building', 'Underground Building', 'Industrial Structure',
+    'Public Service Structure', 'Observation Structure',
+    'Enclosure Structure', 'Cable', 'Tower', 'Utility Pole',
+    'Substation', 'Telecom Line', 'Telecom Base Station',
+    'Communications Tower', 'Pipeline', 'Storage Tank', 'Water Tower',
+    'Sewer', 'Sewer Vent', 'Residential Area',
+    'Public Management and Service Area', 'Commercial Area',
+    'Mining Area', 'Warehouse', 'Greenery', 'Farmyard',
+    'Infrastructure Area', 'Administrative Region'
+]
+
 impact_types = ['大气对流', '极端降水', '风力增强', '水位上涨', '水流湍急', '水体漫溢', '泄洪分洪', '壅水顶托',
                 '水体倒灌', '排水不畅', '泥沙淤积', '水土流失', '堤坝决口', '洪水冲刷', '积水内涝', '侵入淹没',
                 '淤积覆盖',
                 '水流冒溢', '结构崩塌', '溃决断裂', '滑坡', '泥石流', '山洪', '堰塞阻塞', '塌陷沉降', '交通中断',
                 '能源中断', '通信中断', '运行管制', '排涝失效', '人员伤亡', '人员受困', '撤离疏散', '资源告急',
                 '生产损失', '水质污染', '漂浮物堆积', '植物病虫害', '疫病扩散']
+impact_types_en = [
+    'Atmospheric Convection', 'Extreme Precipitation',
+    'Wind Intensification', 'Water Level Rise', 'Rapid Flow',
+    'Water Overflow', 'Flood Discharge/Diversion', 'Backwater Effect',
+    'Water Backflow', 'Obstructed Drainage', 'Sediment Siltation',
+    'Soil Erosion', 'Dike Breach', 'Flood Erosion', 'Waterlogging',
+    'Submergence', 'Silt Coverage', 'Water Spillage',
+    'Structural Collapse', 'Structural Fracture', 'Landslide',
+    'Debris Flow', 'Flood Erosion', 'Blockage', 'Subsidence',
+    'Traffic Disruption', 'Energy Disruption', 'Communication Disruption',
+    'Operation Stagnation', 'Obstructed Drainage', 'Casualties',
+    'Personnel Stranding', 'Evacuation', 'Supply Crisis',
+    'Production Loss', 'Water Pollution', 'Floating Debris Accumulation',
+    'Plant Pests And Diseases', 'Epidemic Spread'
+]
+
 sensor_types = ['主动光学传感器', '被动光学传感器', '主动微波传感器', '被动微波传感器', '其它传感器']
+sensor_types_en = [
+    'Active Optical Sensor',
+    'Passive Optical Sensor',
+    'Active Microwave Sensor',
+    'Passive Microwave Sensor',
+    'Other Sensor'
+]
+
 platform_types = ['航天观测平台', '航空观测平台', '地面固定平台', '地面移动平台']
+platform_types_en = [
+    'Spaceborne Observation Platform',
+    'Airborne Observation Platform',
+    'Ground-based Fixed Platform',
+    'Ground-based Mobile Platform'
+]
 
 
 
@@ -47,6 +93,11 @@ def event_extraction_combined(text: str):
     Extracts both disaster events and observation events from the provided text using a unified LLM prompt.
     It defines an ontology and uses few-shot prompting to instruct the LLM to output both `disaster_results`
     and `observation_results` instances.
+
+    This is the primary execution function.
+    Since the corpus consists predominantly of Chinese,
+    the task description within the prompt is provided in Chinese to ensure the task is executed correctly.
+    Please refer to the English version 'event_extraction_combined_en' for the corresponding content.
     """
 
     ontology_prompt = f"""
@@ -292,11 +343,268 @@ def event_extraction_combined(text: str):
     return output.content
 
 
+def event_extraction_combined_en(text: str):
+    """
+    Extracts both disaster events and observation events from the provided text using a unified LLM prompt.
+    It defines an ontology and uses few-shot prompting to instruct the LLM to output both `disaster_results`
+    and `observation_results` instances.
+
+    This is the English reference version.
+    The original Chinese execution function is event_extraction_combined.
+    """
+
+    ontology_prompt = f"""
+        class Entity:
+            # Base class for all entities
+            def __init__(self, name: str):
+                self.name = name
+    
+    
+        class Spatial_object(Entity):
+            # General abstract class for geographic objects
+            pass
+        
+        
+        class Geometry(Spatial_object):
+            # Shape of the geographic extent, restricted to'point'、'linestring'、'polygon'
+            def __init__(self, name: str):
+                super().__init__(name)
+                if name not in ['point', 'linestring', 'polygon']:
+                    self.name = ''
+        
+        
+        class Feature(Spatial_object):
+            # Definition: A real, stationary geographic feature mentioned in the text.
+            # Scope: A specific geographic extent or a general feature type, including natural landforms (mountains and rivers) and infrastructure (roads and buildings).
+            # [Important constraints]:
+            # 1. Do not extract moving objects such as vehicles, ships, or pedestrians.
+            # 2. Do not extract natural phenomena such as floods, standing water, earthquakes, or rain puddles as Feature; these belong to DisPhen.
+            # 3. Do not use monitoring indicators or factors, such as disaster extent, as Feature names.
+            def __init__(self,
+                         name: str,  # Geographic feature name, such as Wuhan or Dongting Lake
+                         geo_type: str,  # Geographic feature type, such as city or lake
+                         geometry: Geometry  # Shape type of the geographic feature extent
+                         ):
+                super().__init__(name)
+                self.geo_type = geo_type
+                self.geometry = geometry
+                valid_types = {geo_types_en}
+                if geo_type not in valid_types:
+                    self.geo_type = ''
+        
+        
+        class DisPhen(Entity):
+            # A disaster phenomenon occurring on a geographic object, expressing non-human damage or a phenomenon that may cause secondary disasters
+            # Examples: increased precipitation, standing water, rising water level, inundation, blockage, collapse
+            def __init__(self,
+                         name: str,  # Disaster phenomenon described in the text
+                         impact_type: str,  # Type of disaster phenomenon
+                         ):
+                super().__init__(name)
+                self.name = name
+                self.impact_type = impact_type
+                valid_types = {impact_types_en}
+                if impact_type not in valid_types:
+                    self.impact_type = ''
+        
+        
+        class Sensor(Entity):
+            # Definition: Hardware or a system that observes the geographic environment.
+            # [Important negative constraints]:
+            # 1. Do not identify algorithms, mathematical models, or data-processing methods as sensors.
+            #    Incorrect examples: 'preferred model', 'time-series analysis', 'deep learning algorithm'.
+            # 2. Extract a sensor only when hardware is explicitly mentioned, such as a microwave radiometer, SAR sensor, or optical imager.
+            def __init__(self,
+                         name: str,  # Sensor name described in the text
+                         sensor_type: str,  # Sensor type
+                         sensor_platform: str  # Platform carrying the sensor
+                         ):
+                super().__init__(name)
+        
+                self.sensor_type = sensor_type
+                valid_types = {sensor_types_en}
+                if sensor_type not in valid_types:
+                    self.sensor_type = ''
+        
+                self.sensor_platform = sensor_platform
+                valid_platforms = {platform_types_en}
+                if sensor_platform not in valid_platforms:
+                    self.sensor_platform = ''
+    
+    
+        class Observed_factor(Entity):
+            # Definition: A specific property, parameter, or state of a geographic object or environment observed by a sensor.
+            # [Important positive constraints]:
+            # 1. Use descriptive terms such as extent, depth, concentration, displacement, or vegetation index.
+            # 2. The state must be measurable or extractable.
+            # [Important negative constraints]:
+            # 1. Do not identify disaster event names as factors.
+            #    Incorrect examples: 'flood disaster', 'forest fire', 'earthquake', 'pests and diseases'.
+            #    Instead extract properties such as 'flood inundation extent', 'burned area', or 'surface deformation'.
+            # 2. If the text mentions only monitoring a disaster without a specific indicator, observed_factor must be empty.
+            pass
+        
+        
+        class Feature_factor(Observed_factor):
+            # An observable state property of the geographic object itself
+            # Examples: standing water level, river flow speed, slope stress, building structural stability, road traffic
+            pass
+        
+        
+        class Environment_factor(Observed_factor):
+            # An observable factor in the environment surrounding a geographic object
+            # Examples: precipitation, wind direction, elevation, surface temperature, air humidity
+            pass
+        
+        
+        class Event:
+            # Base class for events, each with subject, predicate, and object
+            def __init__(self, subject, predicate, object):
+                self.subject = subject
+                self.predicate = predicate
+                self.object = object
+        
+        
+        from datetime import datetime
+        from typing import List
+        
+        
+        class Disaster(Event):
+            # Disaster event: [spatial_object, occurs, impact], with observed_factors and time_occurrence as arguments
+            def __init__(
+                    self,
+                    spatial_object: Feature | Geometry,
+                    impact: DisPhen,
+                    observed_factors: List[Feature_factor | Environment_factor] = [],
+                    time_occurrence: datetime = None
+            ):
+                super().__init__(subject=spatial_object, predicate='occurs', object=impact)
+                self.observed_factors = observed_factors
+                self.time_occurrence = time_occurrence
+        
+        
+        class Observation(Event):
+            # Observation event: [sensor, observes, [observed_object, observed_factors]], with observed_span and time_occurrence as arguments
+            def __init__(
+                    self,
+                    sensor: Sensor,
+                    observed_object: Feature | Geometry = None,
+                    observed_factors: List[Feature_factor | Environment_factor] = [],
+                    observed_span: Geometry = None,
+                    time_occurrence: datetime = None
+            ):
+                super().__init__(subject=sensor, predicate='observes', object=[observed_object, observed_factors])
+                self.observed_span = observed_span
+                self.time_occurrence = time_occurrence
+    """
+
+    system_prompt = (
+        "This is an object-oriented programming task. Entity and Event classes are defined above."
+        "Analyze the text and extract two types of information:"
+        "1. **Disaster**: Extract the affected object and disaster impact."
+        "2. **Observation**: Extract the sensor, observed object, and observed factors."
+        "Extract only information explicitly mentioned in the text. Output both `disaster_results` and `observation_results`."
+    )
+
+    chat_example_1 = [
+        "Following persistent heavy rain, flooding above the warning level occurred in the Poyang Lake basin on May 18, 2016, inundating nearby farmland. Researchers used Sentinel-1A radar to rapidly monitor the flood extent.",
+        """
+        disaster_results = [Disaster(subject=Feature(name='Poyang Lake Basin',geo_type='Basin',geometry=Geometry('polygon')), 
+                                predicate='occurs', 
+                                object=DisPhen(name='Flood above warning level',impact_type='Water Level Rise'),
+                                observed_factors=[Environment_factor(name='Flood inundation extent')],
+                                time_occurrence=datetime(2016, 5, 18, 0, 0)),
+                            Disaster(subject=Feature(name='Farmland',geo_type='Farmland',geometry=Geometry('polygon')), 
+                                predicate='occurs', 
+                                object=DisPhen(name='Inundated',impact_type='Submergence'),
+                                observed_factors=[Environment_factor(name='Flood inundation extent')],
+                                time_occurrence=datetime(2016, 5, 18, 0, 0))
+        ]
+
+        observation_results = [Observation(subject=Sensor(name='Sentinel-1A radar',sensor_type='Microwave Sensor', sensor_platform='Spaceborne Observation Platform'), 
+                                    predicate='observes', 
+                                    object=[Feature(name='Poyang Lake Basin',geo_type='Basin',geometry=Geometry('polygon')), [Environment_factor(name='Flood inundation extent')]],
+                                    observed_span=Geometry('polygon'),
+                                    time_occurrence=datetime(2016, 5, 18, 0, 0))
+        ]
+        """
+    ]
+
+    chat_example_2 = [
+        "The Neckar and other rivers in southern Germany exceeded their limits, causing floodwater backflow in Stuttgart, urban water depths of 0.5 m, a power outage, and the evacuation of hundreds of people.",
+        """
+        disaster_results = [Disaster(subject=Feature(name='Neckar River',geo_type='River',geometry=Geometry('linestring')), 
+                                predicate='occurs', 
+                                object=DisPhen(name='Water level above limit',impact_type='Water Level Rise'),
+                                observed_factors=[Feature_factor(name='Water level')],
+                                time_occurrence=None),
+                            Disaster(subject = Feature(name='Stuttgart',geo_type='Administrative Region',geometry=Geometry('polygon')), 
+                                predicate='occurs', 
+                                object=DisPhen(name='Floodwater backflow',impact_type='Floodwater backflow'),
+                                observed_factors=[Feature_factor(name='Standing water depth')],
+                                time_occurrence=None),
+                            Disaster(subject = Feature(name='Stuttgart',geo_type='Administrative Region',geometry=Geometry('polygon')), 
+                                predicate='occurs', 
+                                object=DisPhen(name='Power supply disruption',impact_type='Energy Disruption'),
+                                observed_factors=[],
+                                time_occurrence=None),
+                            Disaster(subject = Feature(name='Stuttgart',geo_type='Administrative Region',geometry=Geometry('polygon')), 
+                                predicate='occurs', 
+                                object=DisPhen(name='Hundreds of people evacuated',impact_type='Evacuation'),
+                                observed_factors=[],
+                                time_occurrence=None)
+                            ]
+        observation_results = []
+        """
+    ]
+
+    chat_example_3 = [
+        "Researchers used a GNSS receiver to continuously monitor the Baishuihe landslide; cumulative surface displacement reached 200 mm and the slope was unstable.",
+        """
+        disaster_results = []
+        observation_results = [Observation(
+                                    subject=Sensor(name='GNSS receiver', sensor_type='In-situ Sensor', sensor_platform='Ground-based Fixed Platform'), 
+                                    predicate='observes', 
+                                    object=[Feature(name='Baishuihe landslide body', geo_type='Mountain', geometry=Geometry('polygon')), [Feature_factor(name='Slope surface displacement')]],
+                                    observed_span=Geometry('point'),
+                                    time_occurrence=None)
+        ]
+        """
+    ]
+
+    prompt_template = ChatPromptTemplate(
+        [
+            ("system", ontology_prompt),
+            ("system", system_prompt),
+            ("human", chat_example_1[0]),
+            ("ai", chat_example_1[1]),
+            ("human", chat_example_2[0]),
+            ("ai", chat_example_2[1]),
+            ("human", chat_example_3[0]),
+            ("ai", chat_example_3[1]),
+            ("human", "{user_input}")
+        ]
+    )
+
+    chain = prompt_template | llm
+
+    output = chain.invoke(
+        {
+            'user_input': text
+        }
+    )
+    return output.content
+
+
 def disaster_event_exaction(text: str):
     """
     Extracts only disaster events from the given text.
     Utilizes an LLM to parse the text and instantiate a list of `Disaster` objects, detailing the
     spatial object, impact, observed factors ,and time occurrence.
+
+    This is the primary execution function. Since the corpus consists predominantly
+    of Chinese, its prompt is in Chinese. See disaster_event_exaction_en for the
+    English reading version.
     """
 
     ontology_prompt = """
@@ -447,11 +755,174 @@ def disaster_event_exaction(text: str):
     return output.content
 
 
+def disaster_event_exaction_en(text: str):
+    """
+    Extracts only disaster events from the given text.
+    Utilizes an LLM to parse the text and instantiate a list of `Disaster` objects, detailing the
+    spatial object, impact, observed factors ,and time occurrence.
+
+    This is the English reference version.
+    The original Chinese execution function is disaster_event_exaction.
+    """
+
+    ontology_prompt = """
+        class Entity:
+            # Base class for all entities
+            def __init__(self, name:str):
+                self.name = name
+        
+        class Spatial_object(Entity):
+            # General abstract class for geographic objects
+            pass
+        
+        class Geometry(Spatial_object):
+            # Shape of the geographic extent, restricted to'point'、'linestring'、'polygon'
+            def __init__(self, name:str):
+                self.name = name
+                if name not in ['point', 'linestring', 'polygon']:
+                    self.name = ''
+        
+        class Feature(Spatial_object):
+            # Definition: A real, stationary geographic feature mentioned in the text.
+            # Scope: A specific geographic extent or a general feature type, including natural landforms (mountains and rivers) and infrastructure (roads and buildings).
+            # [Important negative constraints]:
+            # 1. Do not extract moving objects such as trains, vehicles, cars, vessels, aircraft, pedestrians, or animals.
+            # 2. Do not extract natural phenomena such as floods, standing water, or rain puddles.
+            def __init__(self, 
+                name:str,   #Geographic feature name, such as Wuhan, Dongting Lake, or Nanjing Road
+                geo_type:str,   #Geographic feature type, such as city, lake, or road
+                geometry:Geometry   #Shape type of the geographic feature extent
+            ):
+                self.name = name
+                self.geo_type = geo_type
+                self.geometry = geometry
+                valid_types = [
+                'River', 'Lake', 'Basin', 'Islet',
+                'Shoal', 'Spring', 'Waterfall', 'Mountain', 'Cave', 'Sinkhole', 'Earth Bank', 'Valley', 'Sea', 'Coastline', 'Island', 'Farmland', 'Forest', 'Meadow',
+                'Sand', 'Wetland', 'Ditch', 'Reservoir', 'Pond', 'Water Well', 'Lock Gate', 'Dam', 'Dyke',
+                'Pumping Station', 'Flood Storage Area', 'Highway', 'Railway', 'Subway', 'Waterway', 'Bridge', 'Tunnel', 'Aerialway', 'Underpass', 'Underpass',
+                'Traffic Intersection', 'Train Station', 'Metro Station', 'Tram Station', 'Dock', 'Port', 'Lighthouse', 'Aerodrome', 'Apron',
+                'Underground Parking', 'Ground Parking', 'In-Building Parking', 'Bus Station', 'Charging Station', 'Building', 'Underground Building', 'Industrial Structure',
+                'Public Service Structure', 'Observation Structure', 'Enclosure Structure', 'Cable', 'Tower', 'Utility Pole', 'Substation',
+                'Telecom Line', 'Telecom Base Station', 'Communications Tower', 'Pipeline', 'Storage Tank', 'Water Tower', 'Sewer', 'Sewer Vent', 'Residential Area',
+                'Public Management and Service Area', 'Commercial Area', 'Mining Area', 'Warehouse', 'Greenery', 'Farmyard', 'Infrastructure Area', 'Administrative Region'
+                ]
+                if geo_type not in valid_types:
+                    self.geo_type = ''
+        
+        class DisPhen(Entity):
+            # A disaster phenomenon occurring on a geographic object, expressing non-human damage or a phenomenon that may cause secondary disasters
+            # Examples: increased precipitation, standing water, rising water level, inundation, blockage, collapse
+            def __init__(self, 
+                name:str,   #Disaster phenomenon described in the text
+                impact_type:str,   #Type of disaster phenomenon
+            ):
+                self.name = name
+                self.impact_type = impact_type
+                valid_types = ['Atmospheric Convection', 'Extreme Precipitation', 'Wind Intensification', 'Water Level Rise', 'Rapid Flow', 'Water Overflow', 'Flood Discharge/Diversion', 'Backwater Effect',
+                    'Water Backflow', 'Obstructed Drainage', 'Sediment Siltation', 'Soil Erosion', 'Dike Breach', 'Flood Erosion', 'Waterlogging', 'Submergence', 'Silt Coverage',
+                    'Water Spillage', 'Structural Collapse', 'Structural Fracture', 'Landslide', 'Debris Flow', 'Flood Erosion', 'Blockage', 'Subsidence', 'Traffic Disruption',
+                    'Energy Disruption', 'Communication Disruption', 'Operation Stagnation', 'Obstructed Drainage', 'Casualties', 'Personnel Stranding', 'Evacuation', 'Supply Crisis',
+                    'Production Loss', 'Water Pollution', 'Floating Debris Accumulation', 'Plant Pests And Diseases', 'Epidemic Spread']
+                if impact_type not in valid_types:
+                    self.impact_type = ''
+        
+        class Observed_factor(Entity):
+            # An observable factor changed by a disaster or whose change may contribute to a disaster
+            pass
+        
+        class Feature_factor(Observed_factor):
+            # An observable state property of the geographic object itself
+            # Examples: standing water level, river flow speed, slope stress, building structural stability, road traffic
+            pass
+        
+        class Environment_factor(Observed_factor):
+            # An observable factor in the environment surrounding a geographic object
+            # Examples: precipitation, wind direction, elevation, temperature, humidity
+            pass
+            
+        class Event:
+            # Base class for events, each with subject, predicate, and object
+            def __init__(self, subject:str, predicate:str, object:str):
+                self.subject = subject
+                self.predicate = predicate
+                self.object = object
+        
+        from datetime import datetime
+        
+        class Disaster(Event):
+            # Disaster event: [spatial_object, occurs, impact], with observed_factors and time_occurrence as arguments
+            def __init__(
+                self,
+                spatial_object:Feature | Geometry,
+                impact:DisPhen,
+                observed_factors:List[Feature_factor | Environment_factor] = []
+                time_occurrence:datetime = None
+            ):
+                super().__init__(subject=spatial_object, predicate='occurs', object=impact)
+                self.observed_factors = observed_factors
+                self.time_occurrence = time_occurrence
+    """
+
+    system_prompt = ("This is an object-oriented programming task. Entity and Event classes are defined above. Convert the following text into Disaster objects, extracting only explicitly mentioned information without speculation,"
+                     "Output only the results variable, following the format of the example.")
+
+    chat_example_1 = [
+        "main_text = 'The Neckar and other rivers in southern Germany exceeded their limits, causing floodwater backflow in Stuttgart, urban water depths of 0.5 m, a power outage, and the evacuation of hundreds of people.'",
+        """
+            results = [Disaster(subject=Feature(name='Neckar River',geo_type='River',geometry=Geometry('linestring')), 
+                            predicate='occurs', 
+                            object=DisPhen(name='Water level above limit',impact_type='Water Level Rise'),
+                            observed_factors=[Feature_factor(name='Water level')],
+                            time_occurrence=None),
+                      Disaster(subject = Feature(name='Stuttgart',geo_type='Administrative Region',geometry=Geometry('polygon')), 
+                            predicate='occurs', 
+                            object=DisPhen(name='Floodwater backflow',impact_type='Floodwater backflow'),
+                            observed_factors=[Feature_factor(name='Standing water depth')],
+                            time_occurrence=None),
+                      Disaster(subject = Feature(name='Stuttgart',geo_type='Administrative Region',geometry=Geometry('polygon')), 
+                            predicate='occurs', 
+                            object=DisPhen(name='Power supply disruption',impact_type='Energy Disruption'),
+                            observed_factors=[],
+                            time_occurrence=None),
+                      Disaster(subject = Feature(name='Stuttgart',geo_type='Administrative Region',geometry=Geometry('polygon')), 
+                            predicate='occurs', 
+                            object=DisPhen(name='Hundreds of people evacuated',impact_type='Evacuation'),
+                            observed_factors=[],
+                            time_occurrence=None)
+                      ]
+                      """]
+
+    prompt_template = ChatPromptTemplate(
+        [
+            ("system", ontology_prompt),
+            ("system", system_prompt),
+            ("human", chat_example_1[0]),
+            ("ai", chat_example_1[1]),
+            ("human", "{user_input}")
+        ]
+    )
+
+    chain = prompt_template | llm
+
+    output = chain.invoke(
+        {
+            'user_input': text
+        }
+    )
+    return output.content
+
+
+
 def observation_event_exaction(text: str):
     """
     Extracts only observation events from the given text.
     Utilizes an LLM to parse the text and instantiate a list of `Observation` objects, detailing the
     sensor, observed object, observed factors, observed span, and time occurrence.
+
+    This is the primary execution function. Since the corpus consists predominantly
+    of Chinese, its prompt is in Chinese. See observation_event_exaction_en for the
+    English reading version.
     """
 
     ontology_prompt = """
@@ -603,6 +1074,168 @@ def observation_event_exaction(text: str):
         }
     )
     return output.content
+
+
+def observation_event_exaction_en(text: str):
+    """
+    Extracts only observation events from the given text.
+    Utilizes an LLM to parse the text and instantiate a list of `Observation` objects, detailing the
+    sensor, observed object, observed factors, observed span, and time occurrence.
+
+    This is the English reference version.
+    The original Chinese execution function is observation_event_exaction.
+    """
+
+    ontology_prompt = """
+        class Entity:
+            # Base class for all entities
+            def __init__(self, name:str):
+                self.name = name
+
+        class Spatial_object(Entity):
+            # General abstract class for geographic objects
+            pass
+
+        class Geometry(Spatial_object):
+            # Shape of the geographic extent, restricted to'point'、'linestring'、'polygon'
+            def __init__(self, name:str):
+                self.name = name
+                if name not in ['point', 'linestring', 'polygon']:
+                    self.name = ''
+
+        class Feature(Spatial_object):
+            # Definition: A real, stationary geographic feature mentioned in the text.
+            # Scope: A specific geographic extent or a general feature type, including natural landforms (mountains and rivers) and infrastructure (roads and buildings).
+            # [Important positive constraints]:name must be a specific geographic name (such as Hainan Island) or a general feature type (such as a reservoir).
+            # [Important negative constraints]:
+            # 1. Do not use disaster event names as Feature names. For example, floods and earthquakes are not features; their locations, such as the Yangtze River, are.
+            # 2. Do not use monitoring indicators or factors as Feature names. For example, disaster extent is a factor, not a feature.
+            # 3. Do not extract moving objects such as trains, vehicles, cars, vessels, aircraft, pedestrians, or animals.
+            # 4. Do not extract natural phenomena such as floods, standing water, or rain puddles.
+            def __init__(self, 
+                name:str,   #Geographic feature name, such as Wuhan, Dongting Lake, or Nanjing Road
+                geo_type:str,   #Geographic feature type, such as city, lake, or road
+                geometry:Geometry   #Shape type of the geographic feature extent
+            ):
+                self.name = name
+                self.geo_type = geo_type
+                self.geometry = geometry
+                valid_types = [
+                'River', 'Lake', 'Basin', 'Islet',
+                'Shoal', 'Spring', 'Waterfall', 'Mountain', 'Cave', 'Sinkhole', 'Earth Bank', 'Valley', 'Sea', 'Coastline', 'Island', 'Farmland', 'Forest', 'Meadow',
+                'Sand', 'Wetland', 'Ditch', 'Reservoir', 'Pond', 'Water Well', 'Lock Gate', 'Dam', 'Dyke',
+                'Pumping Station', 'Flood Storage Area', 'Highway', 'Railway', 'Subway', 'Waterway', 'Bridge', 'Tunnel', 'Aerialway', 'Underpass', 'Underpass',
+                'Traffic Intersection', 'Train Station', 'Metro Station', 'Tram Station', 'Dock', 'Port', 'Lighthouse', 'Aerodrome', 'Apron',
+                'Underground Parking', 'Ground Parking', 'In-Building Parking', 'Bus Station', 'Charging Station', 'Building', 'Underground Building', 'Industrial Structure',
+                'Public Service Structure', 'Observation Structure', 'Enclosure Structure', 'Cable', 'Tower', 'Utility Pole', 'Substation',
+                'Telecom Line', 'Telecom Base Station', 'Communications Tower', 'Pipeline', 'Storage Tank', 'Water Tower', 'Sewer', 'Sewer Vent', 'Residential Area',
+                'Public Management and Service Area', 'Commercial Area', 'Mining Area', 'Warehouse', 'Greenery', 'Farmyard', 'Infrastructure Area', 'Administrative Region'
+                ]
+                if geo_type not in valid_types:
+                    self.geo_type = ''
+
+        class Sensor(Entity):
+            # Definition: Hardware or a system that observes the geographic environment.
+            # [Important negative constraints]:
+            # 1. Do not identify algorithms, mathematical models, or data-processing methods as sensors.
+            #    Incorrect examples: 'preferred model', 'time-series analysis', 'deep learning algorithm'.
+            # 2. Extract a sensor only when hardware is explicitly mentioned, such as a microwave radiometer, SAR sensor, or optical imager.
+            def __init__(self, 
+                name:str,   #Sensor name described in the text
+                sensor_type:str,   #Sensor type
+                sensor_platform:str : #Platform carrying the sensor
+            ):
+                self.name = name
+
+                self.sensor_type = sensor_type
+                valid_types = ['In-situ Sensor', 'Optical Sensor', 'LiDAR Sensor', 'Microwave Sensor']
+                if sensor_type not in valid_types:
+                    self.sensor_type = ''
+
+                self.sensor_platform = sensor_platform
+                valid_platforms = ['Spaceborne Observation Platform', 'Airborne Observation Platform', 'Ground-based Fixed Platform', 'Ground-based Mobile Platform']
+                if sensor_platform not in valid_platforms:
+                    self.sensor_platform = ''
+
+        class Observed_factor(Entity):
+            # Definition: A specific property, parameter, or state of a geographic object or environment observed by a sensor.
+            # [Important positive constraints]:
+            # 1. Use descriptive terms such as extent, depth, concentration, displacement, or vegetation index.
+            # 2. The state must be measurable or extractable.
+            # [Important negative constraints]:
+            # 1. Do not identify disaster event names as factors.
+            #    Incorrect examples: 'flood disaster', 'forest fire', 'earthquake', 'pests and diseases'.
+            #    Instead extract properties such as 'flood inundation extent', 'burned area', or 'surface deformation'.
+            # 2. If the text mentions only monitoring a disaster without a specific indicator, observed_factor must be empty.
+            pass
+
+        class Feature_factor(Observed_factor):
+            # An observable state property of the geographic object itself
+            # Examples: standing water level, river flow speed, slope stress, building structural stability, road traffic
+            pass
+
+        class Environment_factor(Observed_factor):
+            # An observable factor in the environment surrounding a geographic object
+            # Examples: precipitation, wind direction, elevation, surface temperature, air humidity
+            pass
+
+        class Event:
+            # Base class for events, each with subject, predicate, and object
+            def __init__(self, subject:str, predicate:str, object:str):
+                self.subject = subject
+                self.predicate = predicate
+                self.object = object
+
+        from datetime import datetime
+
+        class Observation(Event):
+            # Observation event: [sensor, observes, [observed_object, observed_factors]], with observed_span and time_occurrence as arguments
+            def __init__(
+                self,
+                sensor: Sensor
+                observed_object:Feature | Geometry = None,
+                observed_factors:List[Feature_factor | Environment_factor] = []
+                observed_span:Geometry = None
+                time_occurrence:datetime = None
+            ):
+                super().__init__(subject=sensor, predicate='observes', object=[observed_object, observed_factors])
+                self.observed_span = observed_span
+                self.time_occurrence = time_occurrence
+    """
+
+    system_prompt = ("This is an object-oriented programming task. Entity and Event classes are defined above. Convert the following text into Observation objects, extracting only explicitly mentioned information without speculation,"
+                     "Output only the results variable, following the format of the example.")
+
+    chat_example_1 = [
+        "Using Sentinel-1A radar imaging, the most severely flooded areas of the middle and lower Yangtze basin were monitored over time on May 18, 2016, and the inundation extent was rapidly extracted",
+        """
+            results = [Observation(subject=Sensor(name='Sentinel-1A radar imaging system',sensor_type='Microwave Sensor', sensor_platform='Spaceborne Observation Platform'), 
+                            predicate='observes', 
+                            object=[Feature(name='Middle and lower Yangtze basin',geo_type='Basin',geometry=Geometry('polygon'), Environment_factor(name='Flood inundation extent')],
+                            observed_span=Geometry('polygon'),
+                            time_occurrence=datetime(2016, 5, 18, 0, 0))
+                      ]
+                      """]
+
+    prompt_template = ChatPromptTemplate(
+        [
+            ("system", ontology_prompt),
+            ("system", system_prompt),
+            ("human", chat_example_1[0]),
+            ("ai", chat_example_1[1]),
+            ("human", "{user_input}")
+        ]
+    )
+
+    chain = prompt_template | llm
+
+    output = chain.invoke(
+        {
+            'user_input': text
+        }
+    )
+    return output.content
+
 
 
 def parse_disaster_results(results_raw):
@@ -790,7 +1423,7 @@ def parse_observation_results(results_raw):
             return [obs.to_dict() for obs in parsed_data]
         return []
     except Exception as e:
-        print(f"解析出错: {e}")
+        print(f"Parsing failed: {e}")
         return []
 
 
@@ -878,7 +1511,11 @@ def parse_disaster_trigger_safe(llm_response: str):
 
 
 def _worker_cause_relation(text, events_in, events_dict_in):
-    """Worker to call LLM for causal relations[cite: 16]."""
+    """Call the LLM for causal relations.
+
+    This is the primary execution function. Its prompt is in Chinese because the
+    corpus is predominantly Chinese. See _worker_cause_relation_en for English.
+    """
     ontology_prompt = """
             class Event:
                 def __init__(self, subject:str, predicate:str, object:str):
@@ -926,8 +1563,66 @@ def _worker_cause_relation(text, events_in, events_dict_in):
         return []
 
 
+def _worker_cause_relation_en(text, events_in, events_dict_in):
+    """Call the LLM for causal relations.
+
+    This is the English reference version.
+    The original Chinese execution function is _worker_cause_relation.
+    """
+    ontology_prompt = """
+            class Event:
+                def __init__(self, subject:str, predicate:str, object:str):
+                    self.subject = subject
+                    self.predicate = predicate
+                    self.object = object
+            class Disaster(Event):
+                def __init__(self, spatial_object: str, impact: str):
+                    super().__init__(subject=spatial_object, predicate='occurs', object=impact)
+            class Relation:
+                def __init__(self, head_entity, tail_entity):
+                    self.head_entity = head_entity
+                    self.tail_entity = tail_entity
+            class CauseRelation(Relation):
+                def __init__(self, head_disaster: Disaster, tail_disaster: Disaster, judgment_evidence: str):
+                    super().__init__(head_disaster, tail_disaster)
+                    self.judgment_evidence = judgment_evidence
+        """
+    system_prompt = ("This is an object-oriented programming task. Event and Relation classes are defined above; instantiate all CauseRelation objects."
+                     "Use only event objects supplied in the input `disasters` list. Read the text, identify explicit or implicit causal relations, and provide evidence. Output only the results variable.")
+    prompt_template = ChatPromptTemplate([
+        ("system", ontology_prompt),
+        ("system", system_prompt),
+        ("human", "text = {news_text},\ndisasters = {news_disasters}")
+    ])
+    chain = prompt_template | llm
+
+    try:
+        output = chain.invoke({'news_text': text, 'news_disasters': events_in})
+        parsed_relations = parse_disaster_cause_safe(output.content)
+
+        batch_results = []
+        for rel in parsed_relations:
+            head_key = f"Disaster(subject='{rel.head_disaster.subject}', predicate='occurs', object='{rel.head_disaster.object}')"
+            tail_key = f"Disaster(subject='{rel.tail_disaster.subject}', predicate='occurs', object='{rel.tail_disaster.object}')"
+            batch_results.append({
+                'head_id': events_dict_in.get(head_key),
+                'tail_id': events_dict_in.get(tail_key),
+                'evidence': getattr(rel, 'judgment_evidence', ''),
+                'head_key': head_key,
+                'tail_key': tail_key
+            })
+        return batch_results
+    except Exception:
+        return []
+
+
+
 def _worker_trigger_relation(text, disaster_events, obs_events, events_dict):
-    """Worker to call LLM for trigger relations[cite: 17]."""
+    """Call the LLM for trigger relations.
+
+    This is the primary execution function. Its prompt is in Chinese because the
+    corpus is predominantly Chinese. See _worker_trigger_relation_en for English.
+    """
     ontology_prompt = """
             class Event:
                 def __init__(self, subject:str, predicate:str, object:str):
@@ -983,6 +1678,70 @@ def _worker_trigger_relation(text, disaster_events, obs_events, events_dict):
         return batch_results
     except Exception:
         return []
+
+
+def _worker_trigger_relation_en(text, disaster_events, obs_events, events_dict):
+    """Call the LLM for trigger relations.
+
+    This is the English reference version.
+    The original Chinese execution function is _worker_trigger_relation_en.
+    """
+    ontology_prompt = """
+            class Event:
+                def __init__(self, subject:str, predicate:str, object:str):
+                    self.subject = subject
+                    self.predicate = predicate
+                    self.object = object
+            class Disaster(Event):
+                def __init__(self, spatial_object: str, impact: str):
+                    super().__init__(subject=spatial_object, predicate='occurs', object=impact)
+            class Observation(Event):
+                def __init__(self, sensor: str, observed_object:str, observed_factors:str):
+                    super().__init__(subject=sensor, predicate='observes', object=[observed_object, observed_factors])
+            class Relation:
+                def __init__(self, head_entity, tail_entity):
+                    self.head_entity = head_entity
+                    self.tail_entity = tail_entity
+            class TriggerRelation(Relation):
+                def __init__(self, head_disaster: Disaster, tail_disaster: Observation, judgment_evidence: str):
+                    super().__init__(head_disaster, tail_disaster)
+                    self.judgment_evidence = judgment_evidence
+        """
+    system_prompt = ("This is an object-oriented programming task; instantiate all TriggerRelation objects."
+                     "Use only the supplied event objects. Identify how disasters trigger observation tasks and provide evidence. Output only the results variable.")
+    prompt_template = ChatPromptTemplate([
+        ("system", ontology_prompt),
+        ("system", system_prompt),
+        ("human", "text = {text},\ndisasters = {disasters}\nobservations = {observations}")
+    ])
+    chain = prompt_template | llm
+
+    try:
+        output = chain.invoke({'text': text, 'disasters': disaster_events, 'observations': obs_events})
+        relations = parse_disaster_trigger_safe(output.content)
+
+        batch_results = []
+        for relation in relations:
+            head = relation.get('head')
+            tail = relation.get('tail')
+            if not head or not tail or head.get('type') != 'Disaster' or tail.get('type') != 'Observation':
+                continue
+
+            head_key = f"Disaster(subject='{head.get('subject')}', predicate='occurs', object='{head.get('object')}')"
+            obs_obj = tail.get('object', [])
+            geo_name = obs_obj[0] if isinstance(obs_obj, list) else ''
+            factor_name = obs_obj[1] if isinstance(obs_obj, list) and len(obs_obj) > 1 else ''
+            tail_key = f"Observation(subject='{tail.get('subject')}', predicate='observes', object=[{geo_name}, {factor_name}])"
+
+            batch_results.append({
+                'head_id': events_dict.get(head_key),
+                'tail_id': events_dict.get(tail_key),
+                'evidence': relation.get('evidence', '')
+            })
+        return batch_results
+    except Exception:
+        return []
+
 
 
 def update_DO_argument_relations(disaster_node: DisasterEvent, observation_node: ObservationEvent):
@@ -1053,39 +1812,3 @@ def main_update_DO_argument_relations():
         for observation_node in observation_nodes:
             update_DO_argument_relations(disaster_node, observation_node)
         update_D_argument_relations(disaster_node)
-
-
-if __name__ == '__main__':
-    file_path = 'data/all_entity_relation_extraction.json'
-
-    data_list = []
-
-    # 2. 遍历列表，获取每个条目的 text 字段
-    with open(file_path, 'r', encoding='utf-8') as f:
-        print(f"--- 开始逐行读取文件：{file_path} ---")
-        for line_number, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:  # 跳过空行
-                continue
-            try:
-                # 每一行解析为一个独立的 JSON 对象
-                item = json.loads(line)
-                data_list.append(item)
-
-                # 输出 text 字段
-                text_content = item.get('text', '无文本内容')
-                # print(f"数据条目 {line_number}:")
-                # print(text_content)
-                # print("-" * 30)
-            except json.JSONDecodeError as e:
-                print(f"警告：第 {line_number} 行解析失败，已跳过。错误原因: {e}")
-
-    count = 0
-    for text in data_list:
-        count += 1
-        raw = observation_event_exaction(text)
-        print(raw)
-        parse = parse_observation_results(raw)
-        print(parse)
-        if count > 3:
-            break

@@ -56,11 +56,12 @@ def score_events(events, depth_decay=.5):
             if parent_id not in scored or depth!=scored[parent_id]['depth']+1:
                 raise ValueError(f'Missing parent, cycle or inconsistent depth: {key}')
             relation = node['relation_type']
-            if relation not in ('immediate','Altering'):
+            relation = {'immediate': 'Immediate', 'altering': 'Altering'}.get(str(relation).casefold(), relation)
+            if relation not in ('Immediate','Altering'):
                 raise ValueError(f'Unknown causal relation: {relation}')
             parent = scored[parent_id]
             delayed = parent['delayed_edges']+int(relation=='Altering')
-            immediate = parent['immediate_edges']+int(relation=='immediate')
+            immediate = parent['immediate_edges']+int(relation=='Immediate')
             path = parent['path']+[node['phenomenon']]
         if node.get('path') is not None and node['path']!=path:
             raise ValueError(f'Event path disagrees with parent chain: {key}')
@@ -68,7 +69,7 @@ def score_events(events, depth_decay=.5):
         if depth_weight<=0:
             raise ValueError(f'Depth score underflow: {key}')
         scored[key] = dict(event_id=key,phenomenon=node['phenomenon'],parent_id=parent_id,
-                           depth=depth,relation_type=node['relation_type'],path=path,
+                           depth=depth,relation_type=None if parent_id is None else relation,path=path,
                            immediate_edges=immediate,delayed_edges=delayed,
                            depth_weight=depth_weight,score=100.*depth_weight)
     return scored

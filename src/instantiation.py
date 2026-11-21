@@ -4,29 +4,28 @@ import json
 import pickle
 import datetime
 import concurrent.futures
-import numpy as np
 import pandas as pd
 import geopandas as gpd
 import pyproj
-from shapely.geometry import shape, Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import transform
 from shapely import wkt
 from neomodel import db
 from tqdm import tqdm
 from typing import Any, Dict, List, Optional
-from causal_relation_matrix import (TRIGGER, RELATION_CONFIDENCE_MULTIPLIERS,
+from causal_relation_matrix import (RELATION_LABELS, RELATION_CONFIDENCE_MULTIPLIERS,
                                     calculate_relation_confidence, get_relation_code)
 
 from ontology.neo4jmodel import (Neo4jDatabaseConnector, GlobalDisasterEvent, MergeDisasterEvent, Impact,
                                  GeneralizedObservationEvent,
-                                 ObservationEvent, GeoObject, Geometry, DisasterEvent, EnvironmentRule, DisPhen,
+                                 ObservationEvent, GeoObject, Geometry, DisasterEvent, EnvironmentRule,
                                  OSMFeature,
                                  Sensor, GeneralizedObservationPattern, Factor)
 from other.environment_descrption import get_env_rule_chain, evaluate_feature_against_rule
 
 warnings.filterwarnings('ignore')
 
-logic_graph_database = "events-logic-all-1zz-sensor-en"
+logic_graph_database = "events-logic-all-1zz-sensor-en-0904"
 ins_graph_database = "events-ins-all-zhengzhou-1-sensor-en-parallel"
 
 geos_output_folder = "./data/output/zhengzhou_frame_1"
@@ -137,7 +136,7 @@ def get_matrix_secondary_candidates(parent_event: Any,
             "event_description": secondary_description,
             "secondary_impact_type": secondary_impact_type,
             "relation_code": relation_code,
-            "relation_label": "Triggering" if relation_code == TRIGGER else "Facilitation",
+            "relation_label": RELATION_LABELS[relation_code],
             "confidence_multiplier": RELATION_CONFIDENCE_MULTIPLIERS[relation_code],
             "base_confidence": best_record["base_confidence"],
             "effective_confidence": best_record["effective_confidence"],
@@ -320,7 +319,7 @@ def calculate_up_down_stream(ori_geom_proj, scd_gdf_proj, scd_geo_name):
             'priority': priority,
             'spa_priority': priority,
             'importance': importance,
-            'topology': '位于下游',
+            'topology': 'Downstream',
             'distance_desc': f"Downstream (Dist: {int(dist)}m)"
         })
 
@@ -393,7 +392,7 @@ def calculate_topology_distance(ori_geom_proj, scd_gdf_proj, scd_geo_name, topol
     return results
 
 
-def calculate_topology_distance_single(ori_geom_proj, scd_gdf_proj, scd_geo_name, topology, distance_desc='非常近'):
+def calculate_topology_distance_single(ori_geom_proj, scd_gdf_proj, scd_geo_name, topology, distance_desc='Very Close (<10m)'):
     """Find secondary features intersecting the source geometry."""
     results = []
 
@@ -733,7 +732,7 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
             elif isinstance(region_extent, gpd.GeoDataFrame):
                 region_gdf = region_extent
             else:
-                print("Warning: region_extent 格式不支持，跳过裁剪。")
+                print("Warning: unsupported region_extent format; skipping clipping.")
                 region_gdf = None
 
             
@@ -741,7 +740,7 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
                 region_gdf_proj = region_gdf.to_crs(epsg=3857)
                 region_geom_proj = region_gdf_proj.geometry.iloc[0]
         except Exception as e:
-            print(f"Warning: region_extent 处理失败: {e}")
+            print(f"Warning: region_extent processing failed: {e}")
 
     results = {}  
 
@@ -824,7 +823,7 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
                 distance_desc = spatial['distance']  
                 up_down_stream = spatial['orientation']
 
-                print(f"分析: {scd_disaster_des} | 关系: {topology} | 距离: {distance_desc}")
+                print(f"Analyzing: {scd_disaster_des} | Relation: {topology} | Distance: {distance_desc}")
 
                 
                 
@@ -835,7 +834,7 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
                 
 
                 up_down_stream_result = []
-                if '上游-下游' in up_down_stream:
+                if 'Upstream-Downstream' in up_down_stream:
                     up_down_stream_result = calculate_up_down_stream(ori_geom_proj, scd_gdf_proj, scd_geo_name)
 
                 topo_dis_result = calculate_topology_distance(ori_geom_proj, scd_gdf_proj, scd_geo_name, topology,
@@ -986,7 +985,7 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
                             else:
                                 merged_geom_proj = merged_geom_proj.intersection(region_geom_proj)
                         except Exception as e:
-                            print(f"裁剪操作失败: {e}，保留原始范围。")
+                            print(f"Clipping failed: {e}; retaining the original extent.")
 
                     
                     if merged_geom_proj is not None and not merged_geom_proj.is_empty:
@@ -1015,7 +1014,7 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
 def export_secondary_disasters_to_geojson(results: dict, geos_output_folder_in):
     """Export secondary disaster features to GeoJSON files."""
     if not results or len(results) == 0:
-        print("没有发现次生灾害数据，跳过导出。")
+        print("No secondary disaster data found; skipping export.")
         return
 
     if not os.path.exists(geos_output_folder_in):
@@ -1082,9 +1081,9 @@ def export_secondary_disasters_to_geojson(results: dict, geos_output_folder_in):
                 json.dump(feature_collection, f, ensure_ascii=False, indent=2)
 
             generated_files.append(file_path)
-            print(f"已导出次生灾害事件文件: {file_path} (地物数量: {len(features)})")
+            print(f"Secondary disaster file exported: {file_path} (feature count: {len(features)})")
         except Exception as e:
-            print(f"导出 {file_name} 失败: {e}")
+            print(f"Export {file_name} failed: {e}")
 
     return generated_files
 
@@ -1277,12 +1276,18 @@ def save_tree_to_neo4j(node, ori_event_desc, parent_node, parent_node_path: list
             cause_relationship = parent_node.cause.relationship(cur_node)
             cause_relationship.confidence = confidence
             cause_relationship.relation_name = causal_relation_type
+            cause_relationship.relation_type = causal_relation_type
+            cause_relationship.affectType = causal_relation_type
+            cause_relationship.matrix_relation_code = causal_relation_code
             cause_relationship.evidence = relationship_metadata
             cause_relationship.save()
         else:
             parent_node.cause.connect(cur_node, {
                 "confidence": confidence,
                 "relation_name": causal_relation_type,
+                "relation_type": causal_relation_type,
+                "affectType": causal_relation_type,
+                "matrix_relation_code": causal_relation_code,
                 "evidence": relationship_metadata,
             })
 
@@ -1625,15 +1630,15 @@ def construct_instantiation_database(ori_events: list,
     with open(output_filename, "w", encoding="utf-8") as f:
         json.dump(output_data, f, ensure_ascii=False, indent=4)
 
-    print(f"运行完毕！总耗时: {execution_duration_seconds} 秒。报告已保存至 {output_filename}")
+    print(f"Processing completed. Elapsed time: {execution_duration_seconds} seconds. Report saved to {output_filename}")
 
     filename = 'event_trees_rain_zhengzhou-all-1-sensor-en-1.pickle'
     try:
         with open(filename, 'wb') as file:
             pickle.dump(event_trees, file)
-        print(f"成功将变量保存到 {filename}")
+        print(f"Saved data to {filename}")
     except Exception as e:
-        print(f"保存过程中发生错误: {e}")
+        print(f"Save failed: {e}")
 
     with open("event_trees_rain_zhengzhou-all-1-sensor-en-1.pickle", "rb") as f:
         event_trees = pickle.load(f)
@@ -1654,10 +1659,10 @@ def construct_instantiation_database(ori_events: list,
             parent_node_path = [event_tree["event_description"]]
             for child in event_tree.get("children", []):
                 save_tree_to_neo4j(child, event_tree["event_description"], ori_node, parent_node_path, event_num)
-            print(f"成功持久化灾害链: {event_tree['event_description']}")
+            print(f"Disaster chain persisted: {event_tree['event_description']}")
             event_num += 1
         except Exception as e:
-            print(f"持久化失败 {event_tree['event_description']}: {e}")
+            print(f"Persistence failed for {event_tree['event_description']}: {e}")
     return event_trees
 
 

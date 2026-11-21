@@ -1,16 +1,13 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
+from src.construct_config import get_chat_model_options, get_setting
+from src.graph_language import english_geo_results, english_term
 from langchain.agents import create_agent
-from ontology.neo4jmodel import Neo4jDatabaseConnector, GeoObject, DisPhen, DisasterEvent, OriginText, Geometry
-import json
-import ast
+from ontology.neo4jmodel import Neo4jDatabaseConnector, GeoObject, DisasterEvent, OriginText, Geometry
 import re
 from other.geo_encoding import get_location
 from tqdm import tqdm
-from other.geo_encoding import get_address_lookup_local, get_entity_combined_geometry, analyze_spatial_relation, \
-    get_topological_relation
-import pandas as pd
+from other.geo_encoding import analyze_spatial_relation, get_topological_relation
 
 
 """
@@ -18,16 +15,17 @@ import pandas as pd
 2. Identify spatial relations between disaster events (geocoding & spatial computation + path extraction).
 """
 
-llm = ChatOpenAI(temperature=1.0,
-                 model="deepseek-chat",
-                 openai_api_base="https://api.deepseek.com",
-                 openai_api_key="sk-184a85d7723a49dfbb7b2019c2f77e46")
+llm = ChatOpenAI(**get_chat_model_options('geo'))
 
 
 def geo_ner_re(text: str):
     """
     Extracts static geographic entities (Features) and their static spatial relationships
     from the provided text using a Large Language Model and a predefined ontology.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See geo_ner_re_en for the English version.
     """
     ontology_prompt = """
         class Entity:
@@ -130,6 +128,113 @@ def geo_ner_re(text: str):
     return output.content
 
 
+def geo_ner_re_en(text: str):
+    """
+    Extracts static geographic entities (Features) and their static spatial relationships
+    from the provided text using a Large Language Model and a predefined ontology.
+    """
+    ontology_prompt = """
+        class Entity:
+            # Base class for all entities
+            def __init__(self, name:str):
+                self.name = name
+
+        class Spatial_object(Entity):
+            # General abstract class for geographic objects
+            pass
+
+        class Geometry(Spatial_object):
+            # Geographic extent shape, restricted to 'point', 'linestring', or 'polygon'
+            def __init__(self, name:str):
+                self.name = name
+                if name not in ['point', 'linestring', 'polygon']:
+                    self.name = ''
+
+        class Feature(Spatial_object):
+            # Definition: A real, stationary geographic feature mentioned in the text.
+            # Scope: A specific geographic extent or a general feature type, including natural landforms and infrastructure.
+            # [Important negative constraints]:
+            # 1. Do not extract moving objects such as trains, vehicles, cars, vessels, aircraft, pedestrians, or animals.
+            # 2. Do not extract natural phenomena such as floods, standing water, or rain puddles.
+            def __init__(self, 
+                name:str,   #Geographic feature name, such as Wuhan, Dongting Lake, or Nanjing Road
+                geo_type:str,   #Geographic feature type, such as city, lake, or road
+                geometry:Geometry   #Geographic extent shape type
+            ):
+                self.name = name
+                self.geo_type = geo_type
+                self.geometry = geometry
+                # Allowed types (stationary features only):
+                valid_types = [
+                'River', 'Lake', 'Basin', 'Islet',
+                'Shoal', 'Spring', 'Waterfall', 'Mountain', 'Cave', 'Sinkhole', 'Earth Bank', 'Valley', 'Sea', 'Coastline', 'Island', 'Farmland', 'Forest', 'Meadow',
+                'Sand', 'Wetland', 'Ditch', 'Reservoir', 'Pond', 'Water Well', 'Lock Gate', 'Dam', 'Dyke',
+                'Pumping Station', 'Flood Storage Area', 'Highway', 'Railway', 'Subway', 'Waterway', 'Bridge', 'Tunnel', 'Aerialway', 'Underpass', 'Underpass',
+                'Traffic Intersection', 'Train Station', 'Metro Station', 'Tram Station', 'Dock', 'Port', 'Lighthouse', 'Aerodrome', 'Apron',
+                'Underground Parking', 'Ground Parking', 'In-Building Parking', 'Bus Station', 'Charging Station', 'Building', 'Underground Building', 'Industrial Structure',
+                'Public Service Structure', 'Observation Structure', 'Enclosure Structure', 'Cable', 'Tower', 'Utility Pole', 'Substation',
+                'Telecom Line', 'Telecom Base Station', 'Communications Tower', 'Pipeline', 'Storage Tank', 'Water Tower', 'Sewer', 'Sewer Vent', 'Residential Area',
+                'Public Management and Service Area', 'Commercial Area', 'Mining Area', 'Warehouse', 'Greenery', 'Farmyard', 'Infrastructure Area', 'Administrative Region'
+                ]
+                if geo_type not in valid_types:
+                    self.geo_type = ''
+        
+        class Relation:
+            # Base class for all relations.
+            def __init__(self, head_entity: Entity, tail_entity: Entity):
+                self.head_entity = head_entity
+                self.tail_entity = tail_entity
+        
+        class SpatialRelation(Relation):
+            # Definition: A static spatial relationship between two features.
+            # Categories:
+            # 1. Topology: contains, within, intersects, adjacent, connected, etc.
+            # 2. Distance: far, close, nearby, etc.
+            # 3. Orientation: upstream, downstream, east, north, high or low elevation, center, surroundings, etc.
+            def __init__(self, head_feature: Feature, tail_feature: Feature, spatial_relation_name: str):
+                super.__init__(head_feature, tail_feature)
+                self.spatial_relation_name = spatial_relation_name
+                
+    """
+
+    system_prompt = ("This is an object-oriented programming task. Entity and Relation classes are defined above. Convert the text into Feature and SpatialRelation"
+                     " objects, subject to these requirements:"
+                     "1. Extract only explicitly stated information without speculation. Output only results, strictly following the example."
+                     "2. Feature extraction: extract stationary geographic features only; automatically ignore trains, vehicles, and other moving objects."
+                     "3. SpatialRelation extraction: extract only static relations between features; automatically filter dynamic actions such as driving to or flowing into.")
+
+    chat_example_1 = [
+        "The Baisha Town area of Zhengdong New District lies near the Jialu River and downstream of flood discharge from Changzhuang Reservoir; it was severely affected.",
+        """
+        result=[Feature('Baisha Town, Zhengdong New District', 'Administrative Region', Geometry('polygon')),
+                Feature('Jialu River', 'River', Geometry('linestring')),
+                Feature('Changzhuang Reservoir', 'Reservoir', Geometry('polygon')),
+                SpatialRelation(Feature('Baisha Town, Zhengdong New District', 'Administrative Region', Geometry('polygon')), Feature('Jialu River', 'River', Geometry('linestring')), 'near')
+                SpatialRelation(Feature('Baisha Town, Zhengdong New District', 'Administrative Region', Geometry('polygon')), Feature('Changzhuang Reservoir', 'Reservoir', Geometry('polygon')), 'downstream of')
+                ]
+        """]
+
+    prompt_template = ChatPromptTemplate(
+        [
+            ("system", ontology_prompt),
+            ("system", system_prompt),
+            ("human", chat_example_1[0]),
+            ("ai", chat_example_1[1]),
+            ("human", "{user_input}")
+        ]
+    )
+
+    chain = prompt_template | llm
+
+    output = chain.invoke(
+        {
+            'user_input': text
+        }
+    )
+    return output.content
+
+
+
 def parse_geo_string_to_dict(data_str):
     """
     Parses the string output generated by the LLM (which resembles Python object instantiation)
@@ -196,6 +301,10 @@ def insert_database_geo(llm_result, origin_text, title):
     Inserts the parsed geographic features and spatial relationships into the Neo4j database,
     linking the newly created or updated GeoObject nodes to their source OriginText node.
     """
+    llm_result = english_geo_results(llm_result)
+    if not llm_result['features']:
+        print(f'[Geo record skipped] {title}: no valid geographic features remain.')
+        return False
     origin_text_node = OriginText.nodes.first_or_none(text_content=origin_text)
     if not origin_text_node:
         origin_text_node = OriginText(text_content=origin_text, text_title=title).save()
@@ -225,12 +334,17 @@ def insert_database_geo(llm_result, origin_text, title):
                 rel = geo_head_node.spatial.connect(geo_tail_node)
                 rel.relation_name = geo_re['relation_type']
                 rel.save()
+    return True
 
 
 def identify_is_location(geo_name: str):
     """
     Uses the LLM to determine whether a given geographic name represents a specific,
     real-world physical location (returning True or False).
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See identify_is_location_en for the English version.
     """
     prompt_template = ChatPromptTemplate(
         [
@@ -262,11 +376,51 @@ def identify_is_location(geo_name: str):
         return False
 
 
+def identify_is_location_en(geo_name: str):
+    """
+    Uses the LLM to determine whether a given geographic name represents a specific,
+    real-world physical location (returning True or False).
+    """
+    prompt_template = ChatPromptTemplate(
+        [
+            ("system",
+             "You are a geography expert. Determine whether the geographic name refers to a specific real-world location or extent. Return True if it does, otherwise False."),
+            ("human", "Dongting Lake"),
+            ("ai", "True"),
+            ("human", "Subway"),
+            ("ai", "False"),
+            ("human", "Village"),
+            ("ai", "False"),
+            ("human", "Jurong Reservoir"),
+            ("ai", "True"),
+            ("human", "{user_input}"),
+        ]
+    )
+    chain = prompt_template | llm
+
+    output = chain.invoke(
+        {
+            'user_input': geo_name
+        }
+    )
+    oc = output.content
+    print(f'{geo_name}-result:', oc)
+    if oc in ['True', 'true']:
+        return True
+    else:
+        return False
+
+
+
 def get_geo_location(text, geo_name, geo_type):
     """
     Invokes an LLM agent equipped with a geocoding tool to query OpenStreetMap.
     It resolves ambiguities using the provided text context and returns the location validity,
     coordinates, and OSM IDs.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See get_geo_location_en for the English version.
     """
     sys_prompt = f"""
         你是一名资深的地理信息系统（GIS）与地理编码（Geocoding）专家，熟悉 OpenStreetMap（OSM）与现实世界地理对象的语义对应关系。
@@ -302,6 +456,47 @@ def get_geo_location(text, geo_name, geo_type):
     return output["structured_response"]
 
 
+def get_geo_location_en(text, geo_name, geo_type):
+    """
+    Invokes an LLM agent equipped with a geocoding tool to query OpenStreetMap.
+    It resolves ambiguities using the provided text context and returns the location validity,
+    coordinates, and OSM IDs.
+    """
+    sys_prompt = f"""
+        You are a GIS and geocoding expert familiar with semantic correspondence between OpenStreetMap (OSM) and real-world geographic objects.
+        ## Core task
+        Your task is to assess geographic locatability and filter search results, determining whether the name refers to a specific, uniquely or clearly bounded real-world entity.
+        When search results contain multiple objects with the same name, disambiguate using the reference text.
+        ### 🛑 Workflow and key constraints
+        1. **Use the tool**: Call `get_location` exactly once with an unambiguous normalized name for '{geo_name}', including address context such as county, city, or province.
+        2. **Analyze and disambiguate** using the `get_location` output and reference-text context.
+        3. **Final output**: Once selection is complete, immediately stop tool calls and return `GeoInfo` in strict Pydantic format.
+        4. **No repeated queries**: Regardless of results, do not call `get_location` again during the same invocation.
+    """
+
+    from pydantic import BaseModel, Field
+    from typing import List
+
+    class GeoInfo(BaseModel):
+        is_location: bool = Field(description=f"Whether the geocoding result matches the input geographic object '{geo_name}'")
+        coordinates: List[List[float]] = (
+            Field(
+                description="If 'is_location' is 'True', select the most accurate coordinates for the named object where possible, "
+                            "or multiple coordinates for different components; return [[lon1, lat1], ...]."))
+        osm_type: List[str] = Field(description="If 'is_location' is 'True', the selected geographic object's osm_type")
+        osm_id: List[int] = Field(description="If 'is_location' is 'True', the selected geographic object's osm_id")
+
+    agent = create_agent(llm, tools=[get_location], system_prompt=sys_prompt, response_format=GeoInfo)
+    output = agent.invoke(
+        {"messages": [
+            {"role": "user", "content": f"Reference text: ‘{text}’"},
+            {"role": "user", "content": f"Resolve the geographic object in the reference text of type '{geo_type}' named ‘{geo_name}’"}
+        ]}
+    )
+    return output["structured_response"]
+
+
+
 def delete_all_geometry_node():
     """
     Deletes all Geometry nodes currently stored in the Neo4j database.
@@ -319,7 +514,7 @@ def is_geo_location():
     """
     geo_nodes = GeoObject.nodes.all()
     geos_location = []
-    for geo_node in tqdm(geo_nodes, desc="地理实体定位性判定"):
+    for geo_node in tqdm(geo_nodes, desc="Geographic entity locatability"):
         geo_name = geo_node.geo_object_name
         if geo_node.is_location is None:
             geo_node.is_location = identify_is_location(geo_name)
@@ -329,14 +524,13 @@ def is_geo_location():
     return geos_location
 
 
-from tqdm import tqdm
-
-
-def is_geo_location_parallel(max_workers=15):
+def is_geo_location_parallel(max_workers=None):
     """
     A multi-threaded version of is_geo_location. It batches API requests to the LLM
     for location instantiation_validation and subsequently updates the Neo4j database in the main thread.
     """
+    if max_workers is None:
+        max_workers = get_setting('geocoding.location_workers')
     geo_nodes = GeoObject.nodes.all()
     geos_location = []
 
@@ -367,21 +561,21 @@ def is_geo_location_parallel(max_workers=15):
                 print(results)
             return results
         except Exception as e:
-            print(f"处理实体 {name} 时出错: {e}")
+            print(f"Processing entity {name} failed: {e}")
             return []
 
     collected_data = []
-    print(f"🚀 开始并行调用 API (并发数: {max_workers})...")
+    print(f"🚀 Starting parallel API requests (workers: {max_workers})...")
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_item = {executor.submit(fetch_location_data, name): name for name in tasks}
 
-        for future in tqdm(as_completed(future_to_item), total=len(tasks), desc="大模型判定"):
+        for future in tqdm(as_completed(future_to_item), total=len(tasks), desc="LLM classification"):
             res = future.result()
             if res:
                 collected_data.extend(res)
 
     if collected_data:
-        print(f"存储中... 共有 {len(collected_data)} 条记录待入库")
+        print(f"Saving... {len(collected_data)} records to insert")
         for item in collected_data:
             name = item['geo_name']
             is_loc = item['is_location']
@@ -394,9 +588,9 @@ def is_geo_location_parallel(max_workers=15):
             if is_loc:
                 geos_location.append(name)
 
-        print("✅ 地理实体处理并入库完成。")
+        print("✅ Geographic entity processing and database insertion completed.")
     else:
-        print("⚠️ 未提取到有效数据。")
+        print("⚠️ No valid data extracted.")
 
     return geos_location
 
@@ -408,7 +602,7 @@ def get_save_geo_geometry(geo_node, do_encoding=False):
     saves the new Geometry node, and connects it.
     """
     if geo_node.has_geometry.all():
-        print(f"{geo_node.geo_object_name}已定位")
+        print(f"{geo_node.geo_object_name} located")
         geometry = geo_node.has_geometry.all()[0]
         return geometry.osm_id
     if not do_encoding:
@@ -424,7 +618,7 @@ def get_save_geo_geometry(geo_node, do_encoding=False):
         geo_node.is_location = identify_is_location(geo_name)
         geo_node.save()
     if not geo_node.is_location:
-        print(f"{geo_node.geo_object_name}不可定位")
+        print(f"{geo_node.geo_object_name} not locatable")
         return ''
 
     location_info = get_geo_location(origin_text, geo_name, geo_type)
@@ -468,9 +662,9 @@ def geo_location():
     geocoding (fetching coordinates and OSM IDs) for nodes that lack spatial geometry.
     """
     geo_nodes = GeoObject.nodes.all()
-    for geo_node in tqdm(geo_nodes, desc="地理编码"):
+    for geo_node in tqdm(geo_nodes, desc="Geocoding"):
         if geo_node.has_geometry.all():
-            print(f"{geo_node.geo_object_name}已定位")
+            print(f"{geo_node.geo_object_name} located")
             continue
         text_nodes = geo_node.origin.all()
         text_contents = [text_node.text_content for text_node in text_nodes]
@@ -554,7 +748,7 @@ def _fetch_geo_info_worker(geo_name, geo_type, origin_text, is_location_known):
     A worker function for multi-threading that handles LLM API requests for location
     instantiation_validation and geocoding without interacting directly with the database.
     """
-    print(f"[Thread-Start] 开始请求大模型/API 解析: {geo_name}")
+    print(f"[Thread-Start] Requesting model/API analysis: {geo_name}")
     result = {
         "geo_name": geo_name,
         "is_location_updated": False,
@@ -565,14 +759,14 @@ def _fetch_geo_info_worker(geo_name, geo_type, origin_text, is_location_known):
     if is_location_known is None:
         result["new_is_location"] = identify_is_location(geo_name)
         result["is_location_updated"] = True
-        print(f"[Thread-Info] {geo_name} 属性判别完成: is_location={result['new_is_location']}")
+        print(f"[Thread-Info] {geo_name} attribute classification completed: is_location={result['new_is_location']}")
 
     if not result["new_is_location"]:
-        print(f"[Thread-End] {geo_name} 不是有效地理位置，跳过查询。")
+        print(f"[Thread-End] {geo_name} is not a valid geographic location; skipping lookup.")
         return result
 
     result["location_info"] = get_geo_location(origin_text, geo_name, geo_type)
-    print(f"[Thread-End] {geo_name} 坐标信息获取完成。")
+    print(f"[Thread-End] {geo_name} coordinates retrieved.")
     return result
 
 
@@ -582,14 +776,14 @@ def _save_geometry_to_db(geo_node, worker_result):
     the Geometry nodes and relationships into the Neo4j database on the main thread.
     """
     geo_name = worker_result["geo_name"]
-    print(f"[DB-Save] 正在处理 {geo_name} 的入库逻辑...")
+    print(f"[DB-Save] Processing {geo_name} for database insertion...")
 
     if worker_result["is_location_updated"]:
         geo_node.is_location = worker_result["new_is_location"]
         geo_node.save()
 
     if not geo_node.is_location:
-        print(f"  -> [Skip] {geo_name} 判定为不可定位。")
+        print(f"  -> [Skip] {geo_name} classified as not locatable.")
         return ''
 
     location_info = worker_result["location_info"]
@@ -623,29 +817,31 @@ def _save_geometry_to_db(geo_node, worker_result):
         if not geometry_node:
             geometry_node = Geometry(location=coordinates, osm_id=osm_ids)
             geometry_node.save()
-            print(f"  -> [Create] 创建新 Geometry 节点: {osm_ids}")
+            print(f"  -> [Create] Created Geometry node: {osm_ids}")
 
         if not geo_node.has_geometry.is_connected(geometry_node):
             geo_node.has_geometry.connect(geometry_node)
-            print(f"  -> [Connect] 建立关联: {geo_name} <-> {osm_ids}")
+            print(f"  -> [Connect] Connected: {geo_name} <-> {osm_ids}")
 
         geo_node.is_location = True
         geo_node.save()
-        print(f"  -> [Success] {geo_name} 成功落库，OSM_ID: {osm_ids}")
+        print(f"  -> [Success] {geo_name} saved to database, OSM_ID: {osm_ids}")
         return osm_ids
 
-    print(f"  -> [Fail] {geo_name} 提取的 location_info 不完整或无效。")
+    print(f"  -> [Fail] {geo_name} extracted location_info is incomplete or invalid.")
     return ''
 
 
-def event_pair_geo_encoding_parallel(geo_has_location: list, do_encoding: bool = True):
+def event_pair_geo_encoding_parallel(geo_has_location: list, do_encoding: bool = None):
     """
     A multi-threaded version of event_pair_geo_encoding. It parallelizes the geocoding
     API requests to significantly speed up spatial coordinate extraction for causal event pairs.
     """
-    print("\n========== 开始执行事件对地理编码 (event_pair_geo_encoding) ==========")
+    if do_encoding is None:
+        do_encoding = get_setting('geocoding.do_encoding')
+    print("\n========== Starting event-pair geocoding (event_pair_geo_encoding) ==========")
     disaster_event_nodes = DisasterEvent.nodes.all()
-    print(f"[Phase 1] 扫描到 {len(disaster_event_nodes)} 个灾害事件节点，开始收集需要处理的地理实体...")
+    print(f"[Phase 1] Found {len(disaster_event_nodes)} disaster events; collecting geographic entities...")
 
     nodes_to_process = {}
     osm_id_cache = {}
@@ -674,12 +870,12 @@ def event_pair_geo_encoding_parallel(geo_has_location: list, do_encoding: bool =
                 else:
                     has_no_geometry.add(re_geo)
 
-    print(f"[Phase 1 统计] 已有坐标的实体(缓存): {len(osm_id_cache)} 个")
-    print(f"[Phase 1 统计] 缺失坐标需请求的实体: {len(nodes_to_process)} 个")
-    print(f"[Phase 1 统计] 明确无坐标的实体: {len(has_no_geometry)} 个\n")
+    print(f"[Phase 1] Entities with cached coordinates: {len(osm_id_cache)}")
+    print(f"[Phase 1] Entities requiring coordinate lookup: {len(nodes_to_process)}")
+    print(f"[Phase 1] Entities without coordinates: {len(has_no_geometry)}\n")
 
     if do_encoding and nodes_to_process:
-        print(f"========== [Phase 2] 启动多线程进行 API 请求 (共 {len(nodes_to_process)} 个任务) ==========")
+        print(f"========== [Phase 2] Starting parallel API requests ({len(nodes_to_process)} tasks) ==========")
         tasks_data = []
         for name, node in nodes_to_process.items():
             text_nodes = node.origin.all()
@@ -692,7 +888,7 @@ def event_pair_geo_encoding_parallel(geo_has_location: list, do_encoding: bool =
             })
 
         worker_results = {}
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=get_setting('geocoding.encoding_workers')) as executor:
             future_to_name = {
                 executor.submit(
                     _fetch_geo_info_worker,
@@ -708,11 +904,11 @@ def event_pair_geo_encoding_parallel(geo_has_location: list, do_encoding: bool =
                 completed_count += 1
                 try:
                     worker_results[name] = future.result()
-                    print(f"[Progress] {completed_count}/{total_tasks} - {name} 任务正常返回。")
+                    print(f"[Progress] {completed_count}/{total_tasks} - {name} completed.")
                 except Exception as exc:
-                    print(f"[Error] 进度 {completed_count}/{total_tasks} - [{name}] API 请求异常: {exc}")
+                    print(f"[Error] Progress {completed_count}/{total_tasks} - [{name}] API request failed: {exc}")
 
-        print(f"\n========== [Phase 3] 主线程开始执行数据库写入操作 ==========")
+        print(f"\n========== [Phase 3] Main thread is writing to the database ==========")
         for name, result in worker_results.items():
             node = nodes_to_process[name]
             osm_id = _save_geometry_to_db(node, result)
@@ -721,7 +917,7 @@ def event_pair_geo_encoding_parallel(geo_has_location: list, do_encoding: bool =
             else:
                 has_no_geometry.add(name)
 
-    print(f"\n========== [Phase 4] 组装最终因果对结果 ==========")
+    print(f"\n========== [Phase 4] Assembling final causal pairs ==========")
     event_pairs_can_sn = []
     for en in disaster_event_nodes:
         ca_geo_object = en.geo_argument.all()[0]
@@ -742,7 +938,7 @@ def event_pair_geo_encoding_parallel(geo_has_location: list, do_encoding: bool =
                     'osm_ids_pair': [ca_geometry, re_geometry]
                 })
 
-    print(f"[结束] 成功提取并生成 {len(event_pairs_can_sn)} 个具备空间坐标的灾害因果对。==========\n")
+    print(f"[Complete] Successfully extracted and generated {len(event_pairs_can_sn)} disaster causal pairs with spatial coordinates.==========\n")
     return event_pairs_can_sn
 
 
@@ -769,12 +965,13 @@ def extract_path_triples(path, rel_tip='relation_name', node_tip='geo_object_nam
 
 def find_geo_semantics_path(ca_geo_object, re_geo_object):
     """
-    Queries the database to find the shortest spatial semantic path (up to 8 hops)
+    Queries the database to find the shortest spatial semantic path within the configured hop limit
     between two GeoObject nodes connected by 'SPATIAL' relationships.
     """
     if ca_geo_object and re_geo_object:
-        query = """
-        MATCH path = shortestPath((start:GeoObject)-[:SPATIAL*1..8]-(end:GeoObject))
+        max_hops = int(get_setting('geocoding.semantic_path_max_hops'))
+        query = f"""
+        MATCH path = shortestPath((start:GeoObject)-[:SPATIAL*1..{max_hops}]-(end:GeoObject))
         WHERE start.node_id = $start_id AND end.node_id = $end_id
         RETURN path
         """
@@ -802,11 +999,12 @@ def find_geo_type_path(ca_geo_type, re_geo_type):
     Switches the database context to query and return the shortest path between
     two geographic entity types connected by 'SPATIAL' relationships.
     """
-    ca_geo_object = GeoObject.nodes.first_or_none(geo_type=ca_geo_type)
-    re_geo_object = GeoObject.nodes.first_or_none(geo_type=re_geo_type)
+    ca_geo_object = GeoObject.nodes.first_or_none(geo_type=english_term(ca_geo_type, strict=True))
+    re_geo_object = GeoObject.nodes.first_or_none(geo_type=english_term(re_geo_type, strict=True))
     if ca_geo_object and re_geo_object:
-        query = """
-        MATCH path = shortestPath((start:GeoObject)-[:SPATIAL*1..6]-(end:GeoObject))
+        max_hops = int(get_setting('geocoding.type_path_max_hops'))
+        query = f"""
+        MATCH path = shortestPath((start:GeoObject)-[:SPATIAL*1..{max_hops}]-(end:GeoObject))
         WHERE start.node_id = $start_id AND end.node_id = $end_id
         RETURN path
         """
@@ -829,11 +1027,28 @@ def find_geo_type_path(ca_geo_type, re_geo_type):
             return []
 
 
-def main_calculate_spatial_relations():
+def _populate_geo_type_paths(event_pairs, neo_connector):
+    """Read geographic type paths and always restore the caller's database connection."""
+    if not event_pairs:
+        return
+    original_database = neo_connector.database_name
+    try:
+        neo_connector.connect_database('geos-type-1')
+        for pair in event_pairs:
+            cause_type, result_type = pair['geos_type']
+            pair['type_path'] = (find_geo_type_path(cause_type, result_type)
+                                 if cause_type != result_type else [])
+            print(f"{pair['events_desc'][0]}-{pair['events_desc'][1]} : {pair['type_path']}")
+    finally:
+        neo_connector.connect_database(original_database)
+
+
+def main_calculate_spatial_relations(neo_connector):
     """
     The main pipeline for calculating spatial relations. It geocodes disaster event pairs,
     computes topographical, distance, and basin relations, extracts semantic graph paths,
     and saves all computed spatial metrics to the relations between DisasterEvents.
+    Pass the active database connector so type-path queries can restore its database.
     """
     geo_is_location = is_geo_location()
 
@@ -907,19 +1122,7 @@ def main_calculate_spatial_relations():
             spatial_r.relations = new_relations
             spatial_r.save()
 
-    ori_database = neo.database_name
-    neo.connect_database('geos-type-1')
-    for i in event_pair_all:
-        ca_geo_type = i['geos_type'][0]
-        re_geo_type = i['geos_type'][1]
-
-        geo_type_path = []
-        if ca_geo_type != re_geo_type:
-            geo_type_path = find_geo_type_path(ca_geo_type, re_geo_type)
-            print(f"{i['events_desc'][0]}-{i['events_desc'][1]} : {geo_type_path}")
-
-        i['type_path'] = geo_type_path
-    neo.connect_database(ori_database)
+    _populate_geo_type_paths(event_pair_all, neo_connector)
 
     for i in event_pair_all:
         en = DisasterEvent.nodes.first_or_none(node_id=i['events_node'][0])
@@ -935,10 +1138,11 @@ def main_calculate_spatial_relations():
             spatial_r.save()
 
 
-def main_calculate_spatial_relations_only():
+def main_calculate_spatial_relations_only(neo_connector):
     """
     A streamlined version of the spatial relations pipeline that exclusively calculates
     and updates the geographic type-level paths ('type_path') between causally linked DisasterEvents.
+    Pass the active database connector to preserve the caller's selected database.
     """
     event_pair_all = []
     disaster_event_nodes = DisasterEvent.nodes.all()
@@ -955,19 +1159,7 @@ def main_calculate_spatial_relations_only():
                                    'events_desc': [en.event_description, re_en.event_description],
                                    'geos_type': [ca_geo_type, re_geo_type]})
 
-    ori_database = neo.database_name
-    neo.connect_database('geos-type-1')
-    for i in event_pair_all:
-        ca_geo_type = i['geos_type'][0]
-        re_geo_type = i['geos_type'][1]
-
-        geo_type_path = []
-        if ca_geo_type != re_geo_type:
-            geo_type_path = find_geo_type_path(ca_geo_type, re_geo_type)
-            print(f"{i['events_desc'][0]}-{i['events_desc'][1]} : {geo_type_path}")
-
-        i['type_path'] = geo_type_path
-    neo.connect_database(ori_database)
+    _populate_geo_type_paths(event_pair_all, neo_connector)
 
     for i in event_pair_all:
         en = DisasterEvent.nodes.first_or_none(node_id=i['events_node'][0])
@@ -983,83 +1175,5 @@ def main_calculate_spatial_relations_only():
             spatial_r.save()
 
 
-def main_geo_extraction_henan():
-    """
-    Reads text chunks from a JSON dataset (wiki-henan-1), extracts geographic entities
-    and spatial relations using the LLM, and sequentially inserts them into the database.
-    """
-    with open('data/wiki-henan-1.json', "r", encoding="utf-8") as f:
-        wiki_data = json.load(f)
-    de_num = 0
-    for key, value in wiki_data.items():
-        # if de_num >= 1:
-        #     break
-        for index in range(len(value)):
-            # print(v)
-            text = value[index]
-            print("text:\n", text)
-            llm_result = geo_ner_re(f'(title:{key})-' + text)
-            print("raw:\n", llm_result)
-            results = parse_geo_string_to_dict(llm_result)
-            print("dict:\n", results)
-            insert_database_geo(results, text, key)
-
-
-def main_geo_extraction_henan_ref():
-    """
-    Reads structured reference data from a JSON dataset (wiki-henan-ref-1), extracts
-    geographic entities and spatial relations using the LLM, and inserts them into the database.
-    """
-    with open('data/wiki-henan-ref-1.json', "r", encoding="utf-8") as f:
-        wiki_data = json.load(f)
-
-    for value in wiki_data:
-        title = value['title']
-        for index in range(len(value['content'])):
-            # print(v)
-            text = value['content'][index]
-            print("text:\n", text)
-            llm_result = geo_ner_re(text)
-            print("raw:\n", llm_result)
-            results = parse_geo_string_to_dict(llm_result)
-            print("dict:\n", results)
-            insert_database_geo(results, text, title)
-
-
 if __name__ == '__main__':
-    neo = Neo4jDatabaseConnector('events-all-1-mini')
-    input_text = ("7月20日的暴雨导致郑州地铁多处车站和隧道被淹，郑州地铁18时10分全线网停运[88][89]。当时郑州地铁5号线五龙口停车场内的水深几乎快到2米["
-                  "90]。7月20日18时左右，积水冲垮出入场线挡水墙进入5号线海滩寺站和沙口路站之间的行车隧道，导致一列编号0501的列车被困隧道内并进水["
-                  "91]，车厢外积水高过车厢内，积水漫过乘客胸口，最高水位甚至到达乘客脖子。郑州地铁5号线严重水浸事故已导致14人死亡，5人受伤[14][92][89]。7月21日上午，郑州地铁官方网站变为黑白色["
-                  "93]。")
-    result = geo_ner_re(input_text)
-    parsed_result = parse_geo_string_to_dict(result)
-    insert_database_geo(parsed_result, input_text, "河南暴雨")
-
-    main_geo_extraction_henan()
-
-    delete_all_geometry_node()
-    geo_location()
-    geos = GeoObject.nodes.all()
-    geo_num = len(geos)
-    gm_num = 0
-    for geo in geos:
-        if geo.has_geometry.all():
-            gm_num += 1
-    print(geo_num)
-    print(gm_num, gm_num/geo_num)
-
-    main_geo_extraction_henan_ref()
-
-    geo_is_location = is_geo_location()
-    event_pairs_encoding = event_pair_geo_encoding(geo_is_location)
-    print(event_pairs_encoding)
-    for geom in Geometry.nodes.all():
-        osm_ids = str(geom.osm_id).replace('-', ',')
-        print(get_entity_combined_geometry(osm_ids))
-
-    # 执行地理编码，识别空间关系
-    main_calculate_spatial_relations_only()
-    geo_is_location = is_geo_location()
-    event_pair_geo_encoding_parallel(geo_is_location, True)
-    main_calculate_spatial_relations()
+    neo = Neo4jDatabaseConnector(get_setting('standalone.geo_database'))

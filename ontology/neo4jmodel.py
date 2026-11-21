@@ -4,20 +4,25 @@ from neomodel import (
     StringProperty, IntegerProperty, UniqueIdProperty, BooleanProperty,
     RelationshipTo, FloatProperty, ArrayProperty, JSONProperty
 )
-from typing import List
+from src.construct_config import get_setting
 
 
 # ========== Database Connection ==========
 class Neo4jDatabaseConnector:
-    DATABASE_URL = "bolt://neo4j:12345678@localhost:7687"
+    DATABASE_URL = get_setting('neo4j.url')
 
-    def __init__(self, database_name='case'):
+    def __init__(self, database_name=None):
+        """Connect to the selected database using the configured Neo4j server URL."""
+        database_name = database_name if database_name is not None else get_setting('neo4j.default_database')
+        self.DATABASE_URL = get_setting('neo4j.url')
         config.DATABASE_URL = self.DATABASE_URL
         self.db = neo4j_db
         self.database_name = database_name
         self.connect_database(database_name)
 
-    def connect_database(self, database_name='case'):
+    def connect_database(self, database_name=None):
+        """Switch the active database, falling back to the configured default when omitted."""
+        database_name = database_name if database_name is not None else get_setting('neo4j.default_database')
         self.db.set_connection(self.DATABASE_URL + f"/{database_name}")
 
 
@@ -31,32 +36,35 @@ class SpatialRelation(StructuredRel):
 class HappenRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="Happen")
-    relation_name = StringProperty(default="发生")
+    relation_name = StringProperty(default="Happen")
 
 
 class EventArgumentRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="Argument")
-    relation_name = StringProperty(default="论元")
+    relation_name = StringProperty(default="Argument")
     score = FloatProperty()
 
 
 class FromRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="From")
-    relation_name = StringProperty(default="来源于")
+    relation_name = StringProperty(default="From")
 
 
 class ExistRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="Exist")
-    relation_name = StringProperty(default="存在")
+    relation_name = StringProperty(default="Exist")
 
 
 class CauseRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="Cause")
-    relation_name = StringProperty(default="引起")
+    relation_name = StringProperty(default="Cause")
+    affectType = StringProperty()
+    matrix_relation_code = StringProperty()
+    matrix_review_status = StringProperty()
     relation_count = IntegerProperty(default=1)
     evidence = StringProperty()
     cluster_pattern = StringProperty()
@@ -69,43 +77,43 @@ class CauseRelation(StructuredRel):
 class ObservedRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="Observed")
-    relation_name = StringProperty(default="观测因子")
+    relation_name = StringProperty(default="Observed Factor")
 
 
 class OccurredAtRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="OccurredAt")
-    relation_name = StringProperty(default="发生时间")
+    relation_name = StringProperty(default="Occurred At")
 
 
 class AlignedRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="Alignment")
-    relation_name = StringProperty(default="对齐")
+    relation_name = StringProperty(default="Alignment")
 
 
 class HasGeometryRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="HasGeometry")
-    relation_name = StringProperty(default="空间几何")
+    relation_name = StringProperty(default="Geometry")
 
 
 class IncludeRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="Include")
-    relation_name = StringProperty(default="包括")
+    relation_name = StringProperty(default="Include")
 
 
 class AssociateRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="Associate")
-    relation_name = StringProperty(default="关联")
+    relation_name = StringProperty(default="Associate")
 
 
 class AssociateFactorRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="Associate")
-    relation_name = StringProperty(default="关联")
+    relation_name = StringProperty(default="Associate")
 
     type = StringProperty()
     score = FloatProperty(default=0)
@@ -237,7 +245,7 @@ class OriginText(StructuredNode):
 class GlobalCauseRelation(StructuredRel):
     rel_id = UniqueIdProperty()
     relation_type = StringProperty(default="GlobalCause")
-    relation_name = StringProperty(default="引起")
+    relation_name = StringProperty(default="Cause")
     cluster_pattern = StringProperty()
 
 
@@ -304,8 +312,8 @@ class ObservationPattern(StructuredNode):
 
 class GeneralizedObservationPattern(StructuredNode):
     node_id = UniqueIdProperty()
-    space_res = StringProperty(default='高频')
-    time_res = StringProperty(default='高分辨率')
+    space_res = StringProperty(default='High Resolution')
+    time_res = StringProperty(default='High Frequency')
     obs_position = StringProperty(default='')
     weather_effect = StringProperty(default='')
     disaster_ids = ArrayProperty(StringProperty(), default=[])

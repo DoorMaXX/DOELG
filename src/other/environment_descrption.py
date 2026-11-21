@@ -1,15 +1,22 @@
-from ontology.neo4jmodel import Neo4jDatabaseConnector, GeoObject, DisPhen, DisasterEvent, OriginText, Geometry, \
-    EnvironmentDescription, MergeDisasterEvent, GlobalDisasterEvent, EnvironmentRule
+from ontology.neo4jmodel import (
+    Neo4jDatabaseConnector, DisasterEvent, EnvironmentDescription,
+    MergeDisasterEvent, GlobalDisasterEvent, EnvironmentRule
+)
 from geo_extraction import llm
 from langchain.agents import create_agent
 from pydantic import BaseModel, Field
-from typing import List, Optional, Union
+from typing import List, Union
+from src.construct_config import get_setting
 
 
 def get_event_envDes_llm(text, event_des):
     """
     Extracts the hazard-formative environment description for a given disaster event
     from the provided text using an LLM.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See get_event_envDes_llm_en for the English version.
     """
     sys_prompt = """
     你是一位地理灾害分析专家。给定一段【来源文本】和一个已提取的【灾害事件描述】，请从文本中分析并总结出导致该事件发生的“孕灾环境”描述。
@@ -41,6 +48,44 @@ def get_event_envDes_llm(text, event_des):
         ]}
     )
     return output["structured_response"]
+
+
+def get_event_envDes_llm_en(text, event_des):
+    """
+    Extracts the hazard-formative environment description for a given disaster event
+    from the provided text using an LLM.
+    """
+    sys_prompt = """
+    You are a geographic hazard analyst. Given source text and an extracted disaster event description, summarize the hazard-formative environment that contributed to the event.
+    [Definition]
+    The hazard-formative environment comprises the background conditions in which a disaster occurs.
+    [Extraction requirements]
+    1. Use concise, complete descriptions of no more than 10 Chinese characters, such as low-lying terrain, mountain slope, heavy-rain period, or loose soil.
+    2. Cover terrain, meteorology and hydrology, geology, human activity, and related dimensions.
+    3. Avoid lengthy sentences; output descriptive attributes directly.
+    """
+
+    user_prompt = f"""
+    [Source text]: {text}
+    [Disaster event]: {event_des}
+
+    Summarize the hazard-formative environmental characteristics from the source text:
+    """
+
+    from pydantic import BaseModel, Field
+    from typing import List
+
+    class EnvDesInfo(BaseModel):
+        env_des: List[str] = Field(description="Collection of hazard-formative environment descriptions")
+
+    agent = create_agent(llm, system_prompt=sys_prompt, response_format=EnvDesInfo)
+    output = agent.invoke(
+        {"messages": [
+            {"role": "user", "content": user_prompt}
+        ]}
+    )
+    return output["structured_response"]
+
 
 
 def get_save_event_envDes(event_node):
@@ -83,10 +128,30 @@ class RuleOutput(BaseModel):
     spatial_rule: SpatialRule
 
 
+class Constraint_en(BaseModel):
+    factor: str = Field(description="Key factor: slope or abs_elevation")
+    operator: str = Field(description="Operator: > | < | >= | <= | between")
+    value: Union[float, List[float]] = Field(description="Numeric value or range")
+    unit: str = Field(description="Unit: degrees or meters")
+
+class SpatialRule_en(BaseModel):
+    target_object: str = Field(description="Object type: Terrain, Slope_Body, Drainage_Area, Water_Body, Urban_Area")
+    logic: str = Field(description="Logical operator: AND or OR")
+    constraints: List[Constraint_en]
+
+class RuleOutput_en(BaseModel):
+    inference_logic: dict = Field(description="Reasoning including descriptive analysis and scientific basis")
+    spatial_rule: SpatialRule_en
+
+
 def get_env_rule_chain(event: str, env_description: str, addition_info: dict):
     """
     Converts qualitative environment descriptions into quantitative spatial rules
     (like elevation and slope constraints) using a Chain-of-Thought LLM approach.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See get_env_rule_chain_en for the English version.
     """
     system_prompt = """
         你是一位资深的自然地理学专家与防灾减灾工程逻辑分析师。你的任务是将事理图谱（OELG）中关于灾害孕灾环境的“模糊定性描述”转化为基于 高程 (Elevation) 和 坡度 (Slope) 的定量判别逻辑。
@@ -111,6 +176,37 @@ def get_env_rule_chain(event: str, env_description: str, addition_info: dict):
                        "content": f"当前灾害事件为‘{event}’，其孕灾环境描述为：{env_description}’，该地区平均高程为{avg_elevation}米"}]}
     )
     return output["structured_response"]
+
+
+def get_env_rule_chain_en(event: str, env_description: str, addition_info: dict):
+    """
+    Converts qualitative environment descriptions into quantitative spatial rules
+    (like elevation and slope constraints) using a Chain-of-Thought LLM approach.
+    """
+    system_prompt = """
+        You are a physical geography and disaster mitigation analyst. Convert qualitative OELG hazard-formative environment descriptions into quantitative elevation and slope rules.
+
+        [Scope constraints]
+        - Object types: Terrain, Slope_Body, Drainage_Area, Water_Body, Urban_Area
+        - Key factors: slope (degrees), abs_elevation (meters m)
+
+        [Reasoning steps]
+        R1 - Object analysis: identify the core affected geographic object type.
+        R2 - Semantic mapping: map qualitative terms to elevation or slope, such as steep to slope and low-lying to elevation.
+        R3 - Quantification: establish thresholds using geographic knowledge, such as very steep > 35 degrees and steep 25-35 degrees.
+        R4 - Formalization: construct a logical expression.
+
+        {format_instructions}
+    """
+
+    avg_elevation = addition_info.get('elevation', '')
+    agent = create_agent(llm, system_prompt=system_prompt, response_format=RuleOutput_en)
+    output = agent.invoke(
+        {"messages": [{"role": "user",
+                       "content": f"The current disaster event is ‘{event}’; its hazard-formative environment is {env_description}’; the regional mean elevation is {avg_elevation} meters"}]}
+    )
+    return output["structured_response"]
+
 
 
 def evaluate_feature_against_rule(feature, rule_data) -> bool:
@@ -211,7 +307,7 @@ def generate_env_rule(ori_disaster_des: str):
                     envDes = scd_disaster_envDes[0].description
                     print(envDes)
 
-                addition_info = {'elevation': 190}
+                addition_info = {'elevation': get_setting('generalization.environment.reference_elevation')}
 
                 env_rule = get_env_rule_chain(ori_disaster_des, envDes, addition_info)
 
@@ -238,7 +334,7 @@ def generate_env_rule_to_database():
                 print(envDes)
 
                 if len(rules) == 0:
-                    addition_info = {'elevation': 120}
+                    addition_info = {'elevation': get_setting('generalization.environment.elevation')}
                     env_rules = get_env_rule_chain(scd.event_description, envDes, addition_info)
                     if hasattr(env_rules, 'dict'):
                         env_rules = env_rules.dict()
@@ -256,7 +352,7 @@ def generate_env_rule_to_database():
 
 
 if __name__ == '__main__':
-    neo = Neo4jDatabaseConnector('events-logic-1')
+    neo = Neo4jDatabaseConnector(get_setting('standalone.environment_database'))
     disaster_event_nodes = DisasterEvent.nodes.all()
     for en in disaster_event_nodes:
         if not en.envDes_argument.all():

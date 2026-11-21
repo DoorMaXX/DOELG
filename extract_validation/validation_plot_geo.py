@@ -1,54 +1,39 @@
-import pandas as pd
 import ast
-import matplotlib.pyplot as plt
-from pathlib import Path
-from extract_validation.validation import is_fuzzy_match
 import json
-import matplotlib
+from pathlib import Path
 
-matplotlib.use('Agg')
-plt.style.use('ggplot')
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
+
+from extract_validation.validation import is_fuzzy_match
 
 
 def extract_geo_info(json_str):
-    """
-    Parses a geographic spatial data JSON or dictionary string into structured
-    lists of features (with names and types) and spatial relations.
-    """
+    """Parse geographic entities and spatial relations from a prepared prediction."""
     if not isinstance(json_str, str) or not json_str.strip():
-        return [], []
+        return ([], [])
     try:
-        data = json.loads(json_str)
+        data = json.loads(json_str.replace("'", '"'))
     except:
         try:
             data = ast.literal_eval(json_str)
         except:
-            return [], []
-
-    features = [{"name": f.get('name'), "type": f.get('type')} for f in data.get('features', [])]
-    relations = [{
-        "sub": r.get('subject'),
-        "obj": r.get('object'),
-        "rel": r.get('relation_type') or r.get('relation')
-    } for r in data.get('spatial_relations', [])]
-
-    return features, relations
+            return ([], [])
+    features = [{'name': f.get('name'), 'type': f.get('type')} for f in data.get('features', [])]
+    relations = [{'sub': r.get('subject'), 'obj': r.get('object'), 'rel': r.get('relation_type') or r.get('relation')} for r in data.get('spatial_relations', [])]
+    return (features, relations)
 
 
-def calculate_geo_metrics(file_path):
-    """
-    Calculates and returns the F1 score for geographic features and spatial relations
-    by evaluating model predictions against the ground truth in the given file.
-    """
+def calculate_geo_separated_metrics(file_path):
+    """Return entity, relation, and combined micro precision, recall, and F1."""
     df = pd.read_csv(file_path) if str(file_path).endswith('.csv') else pd.read_excel(file_path)
-
-    tp_f, fp_f, fn_f = 0, 0, 0
-    tp_r, fp_r, fn_r = 0, 0, 0
-
+    tp_f, fp_f, fn_f = (0, 0, 0)
+    tp_r, fp_r, fn_r = (0, 0, 0)
     for _, row in df.iterrows():
         pred_f, pred_r = extract_geo_info(row['raw_json'])
         true_f, true_r = extract_geo_info(row['true_json'])
-
         temp_true_f = true_f[:]
         for pf in pred_f:
             match_idx = -1
@@ -62,18 +47,16 @@ def calculate_geo_metrics(file_path):
             else:
                 fp_f += 1
         fn_f += len(temp_true_f)
-
         temp_true_r = true_r[:]
         for pr in pred_r:
             match_idx = -1
             for i, tr in enumerate(temp_true_r):
-                forward_match = is_fuzzy_match(pr['sub'], tr['sub']) and is_fuzzy_match(pr['obj'], tr['obj'])
-                backward_match = is_fuzzy_match(pr['sub'], tr['obj']) and is_fuzzy_match(pr['obj'], tr['sub'])
-
-                if forward_match or backward_match:
+                forward = is_fuzzy_match(pr['sub'], tr['sub']) and is_fuzzy_match(pr['obj'], tr['obj'])
+                backward = is_fuzzy_match(pr['sub'], tr['obj']) and is_fuzzy_match(pr['obj'], tr['sub'])
+                rel_match = is_fuzzy_match(pr['rel'], tr['rel'], threshold=0.6)
+                if (forward or backward) and rel_match:
                     match_idx = i
                     break
-
             if match_idx != -1:
                 tp_r += 1
                 del temp_true_r[match_idx]
@@ -81,104 +64,60 @@ def calculate_geo_metrics(file_path):
                 fp_r += 1
         fn_r += len(temp_true_r)
 
-    def get_f1(tp, fp, fn):
-        p = tp / (tp + fp) if (tp + fp) > 0 else 0
-        r = tp / (tp + fn) if (tp + fn) > 0 else 0
-        return 2 * p * r / (p + r) if (p + r) > 0 else 0
+    def get_metrics(tp, fp, fn):
+        """Calculate precision, recall, and F1 from accumulated match counts."""
+        prec = tp / (tp + fp) if tp + fp > 0 else 0
+        recall = tp / (tp + fn) if tp + fn > 0 else 0
+        f1 = 2 * (prec * recall) / (prec + recall) if prec + recall > 0 else 0
+        return (prec, recall, f1)
+    tp_total = tp_f + tp_r
+    fp_total = fp_f + fp_r
+    fn_total = fn_f + fn_r
+    return (get_metrics(tp_f, fp_f, fn_f), get_metrics(tp_r, fp_r, fn_r), get_metrics(tp_total, fp_total, fn_total))
 
-    return get_f1(tp_f, fp_f, fn_f), get_f1(tp_r, fp_r, fn_r)
+
+def calculate_geo_metrics(file_path):
+    """Return entity, relation, and combined geographic micro-F1 scores."""
+    return tuple(metrics[2] for metrics in calculate_geo_separated_metrics(file_path))
 
 
 def get_method_scores(shot_list, base_dir, method_prefix):
-    """
-    Iterates through available few-shot files for a specific method prefix to collect
-    and return lists of valid shots, feature F1 scores, and relation F1 scores.
-    """
-    f_scores = []
-    r_scores = []
-    valid_shots = []
-
+    """Collect the original geographic metrics for available few-shot workbooks."""
+    shots, entities, relations, combined = [], [], [], []
     for shot in shot_list:
-        file_path = Path(base_dir) / f"{method_prefix}-{shot}shot.xlsx"
-        if not file_path.exists():
-            file_path = Path(base_dir) / f"{method_prefix}-{shot}shot.csv"
-
-        if file_path.exists():
-            print(f"Reading {shot}-shot data for method {method_prefix}...")
-            f_f1, r_f1 = calculate_geo_metrics(file_path)
-            f_scores.append(f_f1)
-            r_scores.append(r_f1)
-            valid_shots.append(shot)
-        else:
-            print(f"Warning: File not found {file_path}")
-
-    return valid_shots, f_scores, r_scores
+        path = Path(base_dir) / f'{method_prefix}-{shot}shot.xlsx'
+        if not path.exists():
+            path = path.with_suffix('.csv')
+        if not path.exists():
+            raise FileNotFoundError(path)
+        entity, relation, micro = calculate_geo_metrics(path)
+        shots.append(shot)
+        entities.append(entity)
+        relations.append(relation)
+        combined.append(micro)
+    return shots, entities, relations, combined
 
 
 def plot_geo_comparison_results(shot_list, base_dir, method1='default', method2='code', output_dir=None):
-    """
-    Generates comparative line chart visualizations for both geographic features and
-    spatial relations extraction F1 scores between two given methods across various few-shot settings.
-    """
-    output_dir = Path(output_dir or base_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    s_def, f_def, r_def = get_method_scores(shot_list, base_dir, method1)
-    s_code, f_code, r_code = get_method_scores(shot_list, base_dir, method2)
-
-    plt.figure(figsize=(9, 6))
-    plt.plot(s_def, f_def, marker='o', label='Default (Features)', linewidth=2, color='#3498db')
-    plt.plot(s_code, f_code, marker='D', label='Code (Features)', linewidth=2, color='#2ecc71')
-    plt.title('Geographic Features Extraction Comparison', fontsize=14, pad=15)
-    plt.xlabel('Few-shot Samples', fontsize=12)
-    plt.ylabel('F1 Score', fontsize=12)
-    plt.xticks(shot_list)
-    plt.grid(True, linestyle='--', alpha=0.6)
-
-    all_f = f_def + f_code
-    if all_f:
-        plt.ylim(min(all_f) - 0.05, max(all_f) + 0.05)
-
-    for i in range(len(f_def)):
-        plt.annotate(
-            f"{f_def[i]:.3f}",
-            (s_def[i], f_def[i]),
-            textcoords="offset points",
-            xytext=(0, 10),
-            ha='center',
-            fontsize=10
-        )
-    for i in range(len(f_code)):
-        plt.annotate(
-            f"{f_code[i]:.3f}",
-            (s_code[i], f_code[i]),
-            textcoords="offset points",
-            xytext=(0, -18),
-            ha='center',
-            fontsize=10
-        )
-
-    plt.legend(loc='upper left', frameon=True)
-    plt.tight_layout()
-    plt.savefig(output_dir / 'features_comparison.png', dpi=300, facecolor='white')
-    plt.close()
-
-    plt.figure(figsize=(9, 6))
-    plt.plot(s_def, r_def, marker='s', label='Default (Relations)', linewidth=2, color='#e67e22', linestyle='--')
-    plt.plot(s_code, r_code, marker='^', label='Code (Relations)', linewidth=2, color='#e74c3c', linestyle='--')
-    plt.title('Spatial Relations Extraction Comparison', fontsize=14, pad=15)
-    plt.xlabel('Few-shot Samples', fontsize=12)
-    plt.ylabel('F1 Score', fontsize=12)
-    plt.xticks(shot_list)
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend()
-    for i in range(len(r_code)):
-        plt.annotate(f"{r_code[i]:.3f}", (s_code[i], r_code[i]), textcoords="offset points", xytext=(0, 10),
-                     ha='center')
-    for i in range(len(r_def)):
-        plt.annotate(f"{r_def[i]:.3f}", (s_def[i], r_def[i]), textcoords="offset points", xytext=(0, -15),
-                     ha='center')
-    plt.tight_layout()
-    plt.savefig(output_dir / 'relations_comparison.png', dpi=300, facecolor='white')
-    plt.close()
-
-
+    """Plot entity, relation, and combined micro-F1 with relation-word matching enabled."""
+    output = Path(output_dir or base_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    left = get_method_scores(shot_list, base_dir, method1)
+    right = get_method_scores(shot_list, base_dir, method2)
+    for index, name, title in [(1, 'features', 'Geographic entity F1'),
+                                (2, 'relations', 'Spatial relation F1'),
+                                (3, 'combined', 'Geo/Spatial micro-F1')]:
+        fig, ax = plt.subplots(figsize=(9, 6))
+        try:
+            for values, method, marker in [(left, method1, 'o'), (right, method2, 'D')]:
+                ax.plot(values[0], values[index], marker=marker, label=method, linewidth=2)
+                for shot, score in zip(values[0], values[index]):
+                    ax.annotate(f'{score:.3f}', (shot, score), xytext=(0, 8), textcoords='offset points', ha='center')
+            ax.set(xlabel='Few-shot samples', ylabel='F1', title=title, xticks=shot_list)
+            ax.grid(linestyle='--', alpha=.5)
+            ax.legend()
+            fig.tight_layout()
+            fig.savefig(output / f'{name}_comparison.png', dpi=300)
+        finally:
+            plt.close(fig)
+    return output

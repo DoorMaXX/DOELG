@@ -1,347 +1,158 @@
-import pandas as pd
-import re
 import ast
-import matplotlib
-import matplotlib.pyplot as plt
 from pathlib import Path
+import re
 
-matplotlib.use('Agg')
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
+
 
 def normalize_text(text):
-    """
-    Normalizes the input text by removing all non-alphanumeric or non-Chinese
-    characters and converting the text to lowercase.
-    """
+    """Normalize names using the original extraction evaluation rules."""
     if not isinstance(text, str):
-        return str(text) if text is not None else ""
-    return re.sub(r'[^\u4e00-\u9fa5a-zA-Z0-9]', '', text).lower()
-
-plt.rcParams['font.sans-serif'] = ['SimHei']
-plt.rcParams['axes.unicode_minus'] = False
+        return str(text) if text is not None else ''
+    return re.sub('[^\\u4e00-\\u9fa5a-zA-Z0-9]', '', text).lower()
 
 
 def is_fuzzy_match(pred, true, threshold=0.5):
-    """
-    Determines whether two strings match based on substring inclusion or a Jaccard
-    similarity score that meets or exceeds the specified threshold.
-    """
-    s1, s2 = normalize_text(pred), normalize_text(true)
-    if not s1 or not s2: return False
-    if s1 in s2 or s2 in s1: return True
-    set1, set2 = set(s1), set(s2)
+    """Match names by containment or the original character Jaccard threshold."""
+    p_name = pred.get('name', '') if isinstance(pred, dict) else str(pred)
+    t_name = true.get('name', '') if isinstance(true, dict) else str(true)
+    s1, s2 = (normalize_text(p_name), normalize_text(t_name))
+    if not s1 or not s2:
+        return False
+    if s1 in s2 or s2 in s1:
+        return True
+    set1, set2 = (set(s1), set(s2))
     intersection = len(set1 & set2)
     union = len(set1 | set2)
-    return (intersection / union) >= threshold if union > 0 else False
+    return intersection / union >= threshold if union > 0 else False
 
 
 def extract_info_from_dict(data_str):
-    """
-    Parses a JSON-like string into a dictionary and extracts subject/object entities
-    along with their arguments for both 'disaster' and 'observation' events.
-    Returns a tuple containing a list of subject/object dictionaries and a list of argument dictionaries.
-    """
+    """Extract and filter the event entities and arguments used in the paper."""
     if pd.isna(data_str) or str(data_str).strip() in ['', 'nan', 'None']:
-        return [], []
+        return ([], [])
     try:
         data = ast.literal_eval(str(data_str))
     except:
-        return [], []
-
+        return ([], [])
     sub_obj_list = []
     arg_list = []
-
     for item in data.get('disaster', []):
         if isinstance(item.get('feature'), dict):
-            sub_obj_list.append({
-                "name": item['feature'].get('name'),
-                "type": item['feature'].get('geo_type')
-            })
+            sub_obj_list.append({'name': item['feature'].get('name'), 'type': item['feature'].get('geo_type')})
         if isinstance(item.get('impact'), dict):
-            sub_obj_list.append({
-                "name": item['impact'].get('name'),
-                "type": item['impact'].get('impact_type')
-            })
-
+            sub_obj_list.append({'name': item['impact'].get('name'), 'type': item['impact'].get('impact_type')})
         if item.get('time'):
-            arg_list.append({"name": str(item.get('time')), "type": "occurrence_time"})
-
+            arg_list.append({'name': str(item.get('time')), 'type': 'occurrence_time'})
         factors = item.get('factors', {})
         if isinstance(factors, dict):
             for f_type in ['feature_factors', 'environment_factors']:
                 val = factors.get(f_type)
                 if isinstance(val, list):
                     for v in val:
-                        arg_list.append({"name": str(v), "type": f_type})
-
+                        arg_list.append({'name': str(v), 'type': f_type})
     for item in data.get('observation', []):
         if isinstance(item.get('sensor'), dict):
             sensor_info = item['sensor']
-            sub_obj_list.append({
-                "name": sensor_info.get('name'),
-                "type": f"{sensor_info.get('type')}_{sensor_info.get('platform')}"
-            })
-
+            sub_obj_list.append({'name': sensor_info.get('name'), 'type': f"{sensor_info.get('type')}_{sensor_info.get('platform')}"})
         if isinstance(item.get('observed_object'), dict):
-            sub_obj_list.append({
-                "name": item['observed_object'].get('name'),
-                "type": item['observed_object'].get('geo_type')
-            })
-
+            sub_obj_list.append({'name': item['observed_object'].get('name'), 'type': item['observed_object'].get('geo_type')})
         factors = item.get('factors', {})
         if isinstance(factors, dict):
             for f_type in ['feature_factors', 'environment_factors']:
                 val = factors.get(f_type)
                 if isinstance(val, list):
                     for v in val:
-                        sub_obj_list.append({"name": str(v), "type": f_type})
-                        arg_list.append({"name": str(v), "type": f_type})
-
+                        sub_obj_list.append({'name': str(v), 'type': f_type})
+                        arg_list.append({'name': str(v), 'type': f_type})
     sub_obj_list = [x for x in sub_obj_list if x.get('name') and str(x.get('name')).strip() != 'None']
     arg_list = [x for x in arg_list if x.get('name') and str(x.get('name')).strip() != 'None']
+    return (sub_obj_list, arg_list)
 
-    return sub_obj_list, arg_list
+
+def calculate_event_metrics(file_path):
+    """Compute micro metrics over the combined event entities and arguments."""
+    df = pd.read_excel(file_path)
+    total_tp, total_fp, total_fn = (0, 0, 0)
+    tp_type, total_matched_names = (0, 0)
+    for _, row in df.iterrows():
+        p_so, p_arg = extract_info_from_dict(row['raw_json'])
+        t_so, t_arg = extract_info_from_dict(row['true_json'])
+        preds = p_so + p_arg
+        trues = t_so + t_arg
+        temp_trues = trues[:]
+        for p in preds:
+            match_idx = -1
+            for i, t in enumerate(temp_trues):
+                if is_fuzzy_match(p, t):
+                    match_idx = i
+                    break
+            if match_idx != -1:
+                total_tp += 1
+                total_matched_names += 1
+                if str(p.get('type')) == str(temp_trues[match_idx].get('type')):
+                    tp_type += 1
+                del temp_trues[match_idx]
+            else:
+                total_fp += 1
+        total_fn += len(temp_trues)
+    precision = total_tp / (total_tp + total_fp) if total_tp + total_fp > 0 else 0
+    recall = total_tp / (total_tp + total_fn) if total_tp + total_fn > 0 else 0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0
+    type_accuracy = tp_type / total_matched_names if total_matched_names > 0 else 0
+    return {'precision': precision, 'recall': recall, 'f1': f1, 'type_accuracy': type_accuracy, 'true_positive': total_tp, 'false_positive': total_fp, 'false_negative': total_fn}
 
 
 def calculate_file_metrics(file_path):
-    """
-    Reads extraction results from an Excel file and calculates evaluation metrics.
-    Returns the F1 scores for Subjects/Objects, Arguments, and the Type Accuracy score.
-    """
-    df = pd.read_excel(file_path)
-
-    tp_so, fp_so, fn_so = 0, 0, 0
-    tp_type, total_matched_names = 0, 0
-    tp_arg, fp_arg, fn_arg = 0, 0, 0
-
-    for _, row in df.iterrows():
-        pred_so, pred_arg = extract_info_from_dict(row['raw_json'])
-        true_so, true_arg = extract_info_from_dict(row['true_json'])
-
-        temp_true_so = true_so[:]
-        for p in pred_so:
-            match_idx = -1
-            for i, t in enumerate(temp_true_so):
-                if is_fuzzy_match(p['name'], t['name']):
-                    match_idx = i
-                    break
-
-            if match_idx != -1:
-                tp_so += 1
-                total_matched_names += 1
-                if str(p.get('type')) == str(temp_true_so[match_idx].get('type')):
-                    tp_type += 1
-                del temp_true_so[match_idx]
-            else:
-                fp_so += 1
-        fn_so += len(temp_true_so)
-
-        temp_true_arg = true_arg[:]
-        for p in pred_arg:
-            found = False
-            for i, t in enumerate(temp_true_arg):
-                if is_fuzzy_match(p, t):
-                    found = True
-                    del temp_true_arg[i]
-                    break
-            if found:
-                tp_arg += 1
-            else:
-                fp_arg += 1
-        fn_arg += len(temp_true_arg)
-
-    def get_metrics(tp, fp, fn):
-        p = tp / (tp + fp) if (tp + fp) > 0 else 0
-        r = tp / (tp + fn) if (tp + fn) > 0 else 0
-        f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0
-        return p, r, f1
-
-    type_accuracy = tp_type / total_matched_names if total_matched_names > 0 else 0
-
-    so_p, so_r, so_f1 = get_metrics(tp_so, fp_so, fn_so)
-    arg_p, arg_r, arg_f1 = get_metrics(tp_arg, fp_arg, fn_arg)
-
-    return so_f1, arg_f1, type_accuracy
-
-
-def plot_fewshot_results(shot_list, base_dir, method, output_dir=None):
-    """
-    Evaluates extraction performance for a specific method across various few-shot settings
-    and plots the resulting Subject/Object and Argument F1 score curves.
-    """
-    so_f1_scores = []
-    arg_f1_scores = []
-
-    valid_shots = []
-
-    for shot in shot_list:
-        file_path = Path(base_dir) / f"{method}-{shot}shot.xlsx"
-        if not file_path.exists():
-            print(f"Skipping missing file: {file_path}")
-            continue
-
-        print(f"Evaluating {shot}-shot results...")
-        so_f1, arg_f1, type_accuracy = calculate_file_metrics(file_path)
-        so_f1_scores.append(so_f1)
-        arg_f1_scores.append(arg_f1)
-        valid_shots.append(shot)
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(valid_shots, so_f1_scores, marker='o', linestyle='-', linewidth=2, label='Subject/Object F1')
-    plt.plot(valid_shots, arg_f1_scores, marker='s', linestyle='--', linewidth=2, label='Arguments F1')
-
-    plt.title('Event Extraction Performance vs. Few-shot Samples', fontsize=14)
-    plt.xlabel('Number of Few-shot Samples', fontsize=12)
-    plt.ylabel('F1 Score', fontsize=12)
-    plt.xticks(valid_shots)
-    plt.grid(True, linestyle=':', alpha=0.6)
-    plt.legend()
-
-    for i, txt in enumerate(so_f1_scores):
-        plt.annotate(f"{txt:.3f}", (valid_shots[i], so_f1_scores[i]), textcoords="offset points", xytext=(0, 10),
-                     ha='center')
-
-    plt.tight_layout()
-    output_dir = Path(output_dir or base_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    plt.savefig(output_dir / f'{method}_performance_curve.png')
-    plt.close()
+    """Return precision, combined Event-F1, and type accuracy as in KGC_2."""
+    result = calculate_event_metrics(file_path)
+    return result['precision'], result['f1'], result['type_accuracy']
 
 
 def get_method_scores(shot_list, base_dir, method_prefix):
-    """
-    Iterates through available few-shot files for a specific method to collect and return
-    the lists of valid shots, Subject/Object F1, Argument F1, and Type Accuracy scores.
-    """
-    so_scores = []
-    arg_scores = []
-    valid_shots = []
-    type_acc_scores = []
-
+    """Collect the original combined event metrics for available few-shot workbooks."""
+    shots, precisions, f1_scores, accuracies = [], [], [], []
     for shot in shot_list:
-        file_path = Path(base_dir) / f"{method_prefix}-{shot}shot.xlsx"
-        if file_path.exists():
-            print(f"Reading {shot}-shot data for method {method_prefix}...")
-            so_f1, arg_f1, type_acc = calculate_file_metrics(file_path)
-            so_scores.append(so_f1)
-            arg_scores.append(arg_f1)
-            type_acc_scores.append(type_acc)
-            valid_shots.append(shot)
-        else:
-            print(f"Warning: File not found {file_path}")
-
-    return valid_shots, so_scores, arg_scores, type_acc_scores
+        path = Path(base_dir) / f'{method_prefix}-{shot}shot.xlsx'
+        if not path.exists():
+            raise FileNotFoundError(path)
+        precision, f1, accuracy = calculate_file_metrics(path)
+        shots.append(shot)
+        precisions.append(precision)
+        f1_scores.append(f1)
+        accuracies.append(accuracy)
+    return shots, precisions, f1_scores, accuracies
 
 
 def plot_comparison_results(shot_list, base_dir, method1='default', method2='code', output_dir=None):
-    """
-    Generates comparative visualizations plotting Subject/Object extraction F1, Arguments F1,
-    and Type Accuracy between two different extraction methods across varying few-shot settings.
-    """
-    output_dir = Path(output_dir or base_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    shots1, so1, arg1, type_acc1 = get_method_scores(shot_list, base_dir, method1)
-    shots2, so2, arg2, type_acc2 = get_method_scores(shot_list, base_dir, method2)
-
-    plt.style.use('seaborn-v0_8-muted')
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(shots1, so1, marker='o', label=f'{method1} - Sub/Obj', linewidth=2)
-    plt.plot(shots2, so2, marker='D', label=f'{method2} - Sub/Obj', linewidth=2)
-    plt.title('Comparison of Subject/Object Extraction (F1 Score)', fontsize=14)
-    plt.xlabel('Number of Few-shot Samples', fontsize=12)
-    plt.ylabel('F1 Score', fontsize=12)
-    plt.xticks(shot_list)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
-    for i in range(len(so1)):
-        plt.annotate(f"{so1[i]:.3f}", (shots1[i], so1[i]), textcoords="offset points", xytext=(0, 10), ha='center')
-    for i in range(len(so2)):
-        plt.annotate(f"{so2[i]:.3f}", (shots2[i], so2[i]), textcoords="offset points", xytext=(0, -15), ha='center')
-    plt.tight_layout()
-    plt.savefig(output_dir / "comparison_subject_object.png")
-    plt.close()
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(shots1, arg1, marker='s', label=f'{method1} - Arguments', linewidth=2, color='orange')
-    plt.plot(shots2, arg2, marker='^', label=f'{method2} - Arguments', linewidth=2, color='green')
-    plt.title('Comparison of Arguments Extraction (F1 Score)', fontsize=14)
-    plt.xlabel('Number of Few-shot Samples', fontsize=12)
-    plt.ylabel('F1 Score', fontsize=12)
-    plt.xticks(shot_list)
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend()
-    for i in range(len(arg1)):
-        plt.annotate(f"{arg1[i]:.3f}", (shots1[i], arg1[i]), textcoords="offset points", xytext=(0, 10), ha='center')
-    for i in range(len(arg2)):
-        plt.annotate(f"{arg2[i]:.3f}", (shots2[i], arg2[i]), textcoords="offset points", xytext=(0, -15), ha='center')
-    plt.tight_layout()
-    plt.savefig(output_dir / "comparison_arguments.png")
-    plt.close()
-
-    plt.figure(figsize=(10, 6))
-
-    fig = plt.gcf()
-    ax = plt.gca()
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
-
-    plt.plot(
-        shots1, type_acc1,
-        marker='o',
-        color='#4878D0',
-        label=f'{method1}',
-        linewidth=2
-    )
-
-    plt.plot(
-        shots2, type_acc2,
-        marker='D',
-        color='#6ACC64',
-        label=f'{method2}',
-        linewidth=2
-    )
-
-    plt.title('灾害观测事件论元类型识别对比', fontsize=14, pad=10)
-    plt.xlabel('参考案例数量（Number of Few-shot Samples）', fontsize=12)
-    plt.ylabel('准确率', fontsize=12)
-    plt.xticks(shot_list)
-
-    all_data = type_acc1 + type_acc2
-    if all_data:
-        d_min, d_max = min(all_data), max(all_data)
-        margin = (d_max - d_min) * 0.2
-        plt.ylim(max(0, d_min - margin), min(1.0, d_max + margin))
-
-    plt.grid(True, linestyle='--', color='gray', alpha=0.5)
-
-    for i in range(len(type_acc1)):
-        plt.annotate(
-            f"{type_acc1[i]:.3f}",
-            (shots1[i], type_acc1[i]),
-            textcoords="offset points",
-            xytext=(0, 8),
-            ha='center',
-            fontsize=10
-        )
-
-    for i in range(len(type_acc2)):
-        plt.annotate(
-            f"{type_acc2[i]:.3f}",
-            (shots2[i], type_acc2[i]),
-            textcoords="offset points",
-            xytext=(0, -18),
-            ha='center',
-            fontsize=10
-        )
-
-    plt.legend(loc='upper left', frameon=True)
-
-    plt.tight_layout()
-    plt.savefig(
-        output_dir / "comparison_type_accuracy.png",
-        dpi=300,
-        facecolor='white'
-    )
-    plt.close()
+    """Plot combined Event-F1, precision, and type accuracy using the evaluation metric."""
+    output = Path(output_dir or base_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    left = get_method_scores(shot_list, base_dir, method1)
+    methods = [(left, method1, 'o')]
+    if method2 is not None:
+        methods.append((get_method_scores(shot_list, base_dir, method2), method2, 'D'))
+    for index, name, label in [(1, 'precision', 'Precision'), (2, 'event_f1', 'Event micro-F1'),
+                               (3, 'type_accuracy', 'Type accuracy')]:
+        fig, ax = plt.subplots(figsize=(9, 6))
+        try:
+            for values, method, marker in methods:
+                ax.plot(values[0], values[index], marker=marker, label=method, linewidth=2)
+                for shot, score in zip(values[0], values[index]):
+                    ax.annotate(f'{score:.3f}', (shot, score), xytext=(0, 8), textcoords='offset points', ha='center')
+            ax.set(xlabel='Few-shot samples', ylabel=label, title=f'Event extraction: {label}', xticks=shot_list)
+            ax.grid(linestyle='--', alpha=.5)
+            ax.legend()
+            fig.tight_layout()
+            fig.savefig(output / f'comparison_{name}.png', dpi=300)
+        finally:
+            plt.close(fig)
+    return output
 
 
+def plot_fewshot_results(shot_list, base_dir, method, output_dir=None):
+    """Plot one method with the same combined metrics used by the comparison workflow."""
+    return plot_comparison_results(shot_list, base_dir, method, None, output_dir)

@@ -4,7 +4,6 @@ python oelg_graph_store.py --dry-run
 python oelg_graph_store.py --database oelg-1
 """
 import argparse
-from collections import defaultdict
 from datetime import datetime, timezone
 import json
 from pathlib import Path

@@ -1,10 +1,13 @@
 from langchain.agents import create_agent
-from ontology.neo4jmodel import Neo4jDatabaseConnector, GeoObject, DisPhen, DisasterEvent, OriginText, Geometry, \
-    MergeDisasterEvent, GlobalDisasterEvent, EnvironmentDescription, ObservationEvent, GlobalObservationEvent, \
-    MergeObservationEvent, GeneralizedObservationEvent, Sensor, Factor, GeneralizedObservationPattern, EnvironmentRule, \
-    StandardFactor
+from ontology.neo4jmodel import (
+    GeoObject, Impact, DisasterEvent, MergeDisasterEvent, GlobalDisasterEvent,
+    EnvironmentDescription, GeneralizedObservationEvent, Sensor,
+    GeneralizedObservationPattern, EnvironmentRule, StandardFactor
+)
 from tqdm import tqdm
-from event_extraction import geo_types, impact_types, llm
+from event_extraction import geo_types_en as geo_types, impact_types_en as impact_types, sensor_types_en, llm
+from src.graph_language import english_term, split_event_pair
+from src.causal_relation_matrix import get_relation_code, get_relation_metadata
 from fusion import get_ollama_embedding
 import numpy as np
 from sklearn.cluster import AgglomerativeClustering
@@ -12,10 +15,10 @@ import pickle
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from other.environment_descrption import get_env_rule_chain
 import concurrent.futures
-from instantiation_o import migrate_observation_knowledge
-from other.factor_map import main_factor_map_parallel_1, indicator_mapping, main_factor_map_
+from other.factor_map import indicator_mapping
 import json
 from neomodel import db
+from src.construct_config import get_configured_path, get_setting, resolve_project_path
 
 """
 Generalization to disaster event pairs and generalization to observed events
@@ -32,11 +35,11 @@ def get_geo_impact_pair():
     for en in disaster_event_nodes:
         ca_geo_object = en.geo_argument.all()[0]
         ca_geo_name = ca_geo_object.geo_object_name
-        ca_geo_type = ca_geo_object.geo_type
+        ca_geo_type = english_term(ca_geo_object.geo_type, strict=True)
 
         ca_impact = en.impact_argument.all()[0]
         ca_impact_name = ca_impact.impact_name
-        ca_impact_type = ca_impact.impact_type
+        ca_impact_type = english_term(ca_impact.impact_type, strict=True)
 
         if ca_geo_type not in geo_types or ca_impact_type not in impact_types:
             continue
@@ -46,13 +49,16 @@ def get_geo_impact_pair():
         for re_en in en.cause.all():
             re_geo_object = re_en.geo_argument.all()[0]
             re_geo_name = re_geo_object.geo_object_name
-            re_geo_type = re_geo_object.geo_type
+            re_geo_type = english_term(re_geo_object.geo_type, strict=True)
 
             re_impact = re_en.impact_argument.all()[0]
             re_impact_name = re_impact.impact_name
-            re_impact_type = re_impact.impact_type
+            re_impact_type = english_term(re_impact.impact_type, strict=True)
 
             if re_geo_type not in geo_types or re_impact_type not in impact_types:
+                continue
+
+            if get_relation_code(ca_impact_type, re_impact_type) is None:
                 continue
 
             re_event_gen = f"{re_geo_type},{re_impact_type}"
@@ -80,7 +86,7 @@ def get_cached_embedding(text):
     redundant API calls for identical strings.
     """
     if not text or not isinstance(text, str):
-        return np.zeros(4096)
+        return np.zeros(get_setting('embeddings.fusion.empty_vector_dimensions'))
     if text not in EMBEDDING_CACHE:
         EMBEDDING_CACHE[text] = get_ollama_embedding(text)
     return EMBEDDING_CACHE[text]
@@ -111,7 +117,7 @@ def prefetch_event_data(pairs):
             prefetched.append(None)
             continue
 
-        event_desc = f"{ca_en.event_description}导致{re_en.event_description}"
+        event_desc = f"{ca_en.event_description} causes {re_en.event_description}"
 
         ca_env = ca_en.envDes_argument.all()[0].description if ca_en.envDes_argument.all() else ""
         re_env = re_en.envDes_argument.all()[0].description if re_en.envDes_argument.all() else ""
@@ -149,6 +155,7 @@ def calculate_pair_score(feat1, feat2):
     evaluating their event descriptions, environmental descriptions, and spatial relationships.
     """
     if not feat1 or not feat2: return 0
+    settings = get_setting('generalization.similarity')
 
     # 1. Event Argument Similarity
     s1 = cosine_similarity(get_cached_embedding(feat1["event_desc"]),
@@ -167,24 +174,31 @@ def calculate_pair_score(feat1, feat2):
                 sp2["topo"], sp2["dist"], sp2["basin"], sp2["sem"]]):
 
             topo_sim = cosine_similarity(get_cached_embedding(sp1["topo"]), get_cached_embedding(sp2["topo"]))
-            dist_sim = max(0, 1 - abs(sp1["dist"] - sp2["dist"]) / 10000)
+            dist_sim = max(0, 1 - abs(sp1["dist"] - sp2["dist"]) / settings['distance_scale_m'])
             basin_sim = cosine_similarity(get_cached_embedding(sp1["basin"]), get_cached_embedding(sp2["basin"]))
             sem_sim = cosine_similarity(get_cached_embedding(sp1["sem"]), get_cached_embedding(sp2["sem"]))
 
-            s3 = 0.3 * topo_sim + 0.15 * dist_sim + 0.25 * basin_sim + 0.3 * sem_sim
+            weights = settings['spatial_weights']
+            s3 = (weights['topology'] * topo_sim + weights['distance'] * dist_sim
+                  + weights['basin'] * basin_sim + weights['semantics'] * sem_sim)
         elif sp1["sem"] and sp2["sem"]:
             s3 = cosine_similarity(get_cached_embedding(sp1["sem"]), get_cached_embedding(sp2["sem"]))
 
     if s3 >= 0:
-        return 0.2 * s1 + 0.5 * s2 + 0.3 * s3
-    return 0.3 * s1 + 0.7 * s2
+        weights = settings['weights_with_spatial']
+        return weights['event'] * s1 + weights['environment'] * s2 + weights['spatial'] * s3
+    weights = settings['weights_without_spatial']
+    return weights['event'] * s1 + weights['environment'] * s2
 
 
-def similarity_calculation(event_pairs: dict, threshold=0.65):
+def similarity_calculation(event_pairs: dict, threshold=None):
     """
     Performs Agglomerative Clustering on event pairs based on their similarity scores
     to group highly similar disaster event evolutions. Saves the results to a pickle file.
     """
+    settings = get_setting('generalization.similarity')
+    if threshold is None:
+        threshold = settings['threshold']
     clustered_results = {}
 
     for key, pairs in tqdm(event_pairs.items(), desc="Total Progress"):
@@ -207,8 +221,8 @@ def similarity_calculation(event_pairs: dict, threshold=0.65):
         dist_matrix = np.maximum(0, 1 - sim_matrix)
         clustering = AgglomerativeClustering(
             n_clusters=None,
-            metric='precomputed',
-            linkage='average',
+            metric=settings['metric'],
+            linkage=settings['linkage'],
             distance_threshold=1 - threshold
         )
         labels = clustering.fit_predict(dist_matrix)
@@ -219,7 +233,7 @@ def similarity_calculation(event_pairs: dict, threshold=0.65):
         clustered_results[key] = list(clusters.values())
 
     # 持久化
-    with open('all-cluster.pickle', 'wb') as f:
+    with open(get_configured_path('generalization.paths.clusters', create_parent=True), 'wb') as f:
         pickle.dump(clustered_results, f)
 
     return clustered_results
@@ -232,14 +246,15 @@ def process_abstract_clustering_to_graph(clustered_results):
     """
     count = 0
     for pattern_label, clusters in tqdm(clustered_results.items()):
-        parts = pattern_label.split("-")
-        if len(parts) != 2:
+        cause_desc_gen, result_desc_gen = split_event_pair(pattern_label, geo_types, impact_types)
+        pattern_label = f"{cause_desc_gen}-{result_desc_gen}"
+        metadata = get_relation_metadata(cause_desc_gen.rsplit(',', 1)[1], result_desc_gen.rsplit(',', 1)[1])
+        if metadata is None:
+            print(f'[Generalization skipped] {pattern_label}: not authorized by Appendix E.')
             continue
-        cause_desc_gen = parts[0]
-        result_desc_gen = parts[1]
 
         if len(clusters) > 1:
-            print("聚类结果：", clusters)
+            print("Clustering results:", clusters)
 
         for cluster_idx, pairs in enumerate(clusters):
             current_cluster_id = f"{pattern_label}_C{cluster_idx}"
@@ -262,9 +277,11 @@ def process_abstract_clustering_to_graph(clustered_results):
             rel_m = m_cause.cause.relationship(m_result)
             if rel_m:
                 rel_m.relation_count += len(pairs)
+                for key, value in metadata.items():
+                    setattr(rel_m, key, value)
                 rel_m.save()
             else:
-                m_cause.cause.connect(m_result, {'relation_count': len(pairs)})
+                m_cause.cause.connect(m_result, {'relation_count': len(pairs), **metadata})
 
             _connect_global_cause_with_pattern(g_cause, g_result, current_cluster_id)
 
@@ -297,8 +314,11 @@ def construct_generalized_observation_event():
                 observation_nodes = disaster_node.trigger.all()
                 for observation_node in observation_nodes:
                     sensor_node = observation_node.sensor_argument.all()[0]
-                    sensor_type = sensor_node.sensor_type
-                    sensor_platform = sensor_node.platform
+                    sensor_type = english_term(sensor_node.sensor_type, strict=True)
+                    sensor_platform = english_term(sensor_node.platform, strict=True)
+                    if not sensor_type or not sensor_platform:
+                        print(f'[Generalized observation skipped] {observation_node.node_id}: sensor category unavailable.')
+                        continue
 
                     factor_name = ""
                     factor_nodes = observation_node.factor_argument.all()
@@ -309,7 +329,7 @@ def construct_generalized_observation_event():
                     geometry = ""
                     geo_nodes = observation_node.geo_argument.all()
                     if geo_nodes:
-                        geo_type = geo_nodes[0].geo_type
+                        geo_type = english_term(geo_nodes[0].geo_type, strict=True)
                         geometry = geo_nodes[0].geometry
 
                     generalized_observation_eventDes = \
@@ -372,7 +392,7 @@ def construct_generalized_observation_event():
                             print(
                                 f"create [disaster factor]: ({global_disaster_node.event_description}) - [{factor_name}]")
 
-                    if len(geo_nodes) > 0:
+                    if len(geo_nodes) > 0 and geo_type:
                         generalized_geo_node = (
                             GeoObject.nodes.first_or_none(geo_object_name=geo_type, geo_type=geo_type))
                         if not generalized_geo_node:
@@ -393,7 +413,7 @@ def construct_generalized_observation_event():
 
 def construct_global_disaster_arguments():
     """
-    Creates and connects abstract geographic (GeoObject) and disaster Phenomenon (DisPhen) argument nodes
+    Creates and connects abstract geographic (GeoObject) and disaster Phenomenon (Impact) argument nodes
     to their corresponding GlobalDisasterEvent nodes.
     """
     global_disaster_nodes = GlobalDisasterEvent.nodes.all()
@@ -408,9 +428,9 @@ def construct_global_disaster_arguments():
             global_disaster_node.geo_argument.connect(gd_geo_node)
             print(f"create [disaster geo]: ({global_disaster_node.event_description}) - ({gd_geo_type})")
 
-        gd_impact_node = DisPhen.nodes.first_or_none(impact_name=gd_impact_type, impact_type=gd_impact_type)
+        gd_impact_node = Impact.nodes.first_or_none(impact_name=gd_impact_type, impact_type=gd_impact_type)
         if not gd_impact_node:
-            gd_impact_node = DisPhen(impact_name=gd_impact_type, impact_type=gd_impact_type).save()
+            gd_impact_node = Impact(impact_name=gd_impact_type, impact_type=gd_impact_type).save()
         if not global_disaster_node.impact_argument.is_connected(gd_impact_node):
             global_disaster_node.impact_argument.connect(gd_impact_node)
             print(f"create [disaster impact]: ({global_disaster_node.event_description}) - ({gd_impact_type})")
@@ -500,7 +520,7 @@ def calculate_global_event_causal_confidence():
     results, _ = db.cypher_query(query)
 
     if not results:
-        print("未找到 MergeDisasterEvent 间的 CAUSE 关系，请检查 count 属性是否已写入。")
+        print("No CAUSE relationships found between MergeDisasterEvent nodes; check the count property.")
         return
 
     out_counts_query = """
@@ -520,27 +540,30 @@ def calculate_global_event_causal_confidence():
     in_results, _ = db.cypher_query(in_counts_query)
     in_dict = {row[0]: row[1] for row in in_results}
 
-    print(f"正在计算 {len(results)} 条事理模式对的置信度...")
+    print(f"Calculating {len(results)} event-pattern pair confidence values...")
 
     import math
-    for row in tqdm(results, "灾害引发置信度计算"):
+    settings = get_setting('generalization.causal_confidence')
+    for row in tqdm(results, "Disaster causal confidence"):
         s_id, t_id, count, path_count = row
 
         total_out = out_dict.get(s_id, 0)
-        p_b_given_a = (count + 1) / (total_out + len(out_dict))
+        smoothing = settings['laplace_smoothing']
+        p_b_given_a = (count + smoothing) / (total_out + smoothing * len(out_dict))
 
         total_in = in_dict.get(t_id, 0)
         p_b = total_in / total_instances
         lift = p_b_given_a / p_b if p_b > 0 else 1.0
 
-        lift_factor = math.tanh(lift / 5.0)
-        base_score = p_b_given_a * 0.7 + lift_factor * 0.3
+        lift_factor = math.tanh(lift / settings['lift_scale'])
+        base_score = (p_b_given_a * settings['conditional_weight']
+                      + lift_factor * settings['lift_weight'])
 
-        path_enhancement = 1 + 0.15 * math.log1p(path_count)
+        path_enhancement = 1 + settings['path_enhancement'] * math.log1p(path_count)
 
         final_conf = base_score * path_enhancement
 
-        final_conf = min(final_conf, 1.0)
+        final_conf = min(final_conf, settings['maximum'])
 
         update_query = """
             MATCH (m1:GlobalDisasterEvent {node_id: $s_id})-[r:CAUSE]->(m2:GlobalDisasterEvent {node_id: $t_id})
@@ -550,21 +573,23 @@ def calculate_global_event_causal_confidence():
             """
         db.cypher_query(update_query, {
             's_id': s_id, 't_id': t_id,
-            'conf': round(final_conf, 4),
-            'lift': round(lift, 4),
+            'conf': round(final_conf, settings['precision']),
+            'lift': round(lift, settings['precision']),
             'path_count': path_count
         })
 
         print('confidence:', final_conf)
 
-    print("事理对因果置信度计算完成。")
+    print("Event-pair causal confidence calculation completed.")
 
 
-def output_top_causal_pairs(top_n=20):
+def output_top_causal_pairs(top_n=None):
     """
     Queries and prints the top N disaster causal pairs from the database,
     sorted descending by their calculated confidence scores.
     """
+    if top_n is None:
+        top_n = get_setting('generalization.statistics.default_causal_top_n')
     query = """
     MATCH (m1:GlobalDisasterEvent)-[r:CAUSE]->(m2:GlobalDisasterEvent)
     RETURN m1.event_description AS cause_event, 
@@ -577,7 +602,7 @@ def output_top_causal_pairs(top_n=20):
     """
     results, _ = db.cypher_query(query, {'limit': top_n})
 
-    print(f"{'原因事件 (Cause)':<30} | {'结果事件 (Result)':<30} | {'置信度':<8} | {'路径数':<5} | {'频次':<5}")
+    print(f"{'Cause event':<30} | {'Result event':<30} | {'Confidence':<8} | {'Paths':<5} | {'Frequency':<5}")
     print("-" * 90)
 
     for row in results:
@@ -622,16 +647,22 @@ def _connect_global_cause_with_pattern(start_node, end_node, pattern):
     Internal helper function to establish a 'CAUSE' relationship between two
     GlobalDisasterEvent nodes, tagged with a specific cluster pattern ID.
     """
+    metadata = get_relation_metadata(start_node.event_description.rsplit(',', 1)[1],
+                                     end_node.event_description.rsplit(',', 1)[1])
+    if metadata is None:
+        return
     query = """
     MATCH (a:GlobalDisasterEvent), (b:GlobalDisasterEvent)
     WHERE elementId(a) = $a_id AND elementId(b) = $b_id
     MERGE (a)-[r:CAUSE {cluster_pattern: $pattern}]->(b)
-    ON CREATE SET r.relation_type = 'GlobalCause', r.rel_id = randomUUID()
+    ON CREATE SET r.rel_id = randomUUID()
+    SET r += $metadata
     """
     db.cypher_query(query, {
         'a_id': start_node.element_id,
         'b_id': end_node.element_id,
-        'pattern': pattern
+        'pattern': pattern,
+        'metadata': metadata
     })
 
 
@@ -770,18 +801,19 @@ def fetch_spatial_generalization_llm(pattern_label, cause_desc_gen, result_desc_
         return None
 
 
-def generalize_spatial_relations_parallel(clustered_results: dict, max_workers=1):
+def generalize_spatial_relations_parallel(clustered_results: dict, max_workers=None):
     """
     Manages multi-threaded execution to extract spatial instance data, calls the LLM
     for spatial generalization, and writes the structured results back into the graph database.
     """
-    print("正在从数据库提取实例数据...")
+    if max_workers is None:
+        max_workers = get_setting('generalization.spatial_workers')
+    print("Extracting instance data from the database...")
     tasks = []
 
-    for pattern_label, clusters in tqdm(clustered_results.items(), desc="数据预取"):
-        parts = pattern_label.split("-")
-        if len(parts) != 2: continue
-        cause_desc_gen, result_desc_gen = parts[0], parts[1]
+    for pattern_label, clusters in tqdm(clustered_results.items(), desc="Data prefetch"):
+        cause_desc_gen, result_desc_gen = split_event_pair(pattern_label, geo_types, impact_types)
+        pattern_label = f"{cause_desc_gen}-{result_desc_gen}"
 
         for cluster_idx, pairs in enumerate(clusters):
             current_cluster_id = f"{pattern_label}_C{cluster_idx}"
@@ -817,7 +849,7 @@ def generalize_spatial_relations_parallel(clustered_results: dict, max_workers=1
                 "disaster_sr": disaster_sr
             })
 
-    print(f"开始并行泛化分析 (并发数: {max_workers})...")
+    print(f"Starting parallel generalization (workers: {max_workers})...")
     final_results = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_task = {
@@ -827,7 +859,7 @@ def generalize_spatial_relations_parallel(clustered_results: dict, max_workers=1
             for t in tasks
         }
 
-        for future in tqdm(as_completed(future_to_task), total=len(tasks), desc="LLM 泛化中"):
+        for future in tqdm(as_completed(future_to_task), total=len(tasks), desc="LLM generalization"):
             res = future.result()
             if res:
                 task_info = future_to_task[future]
@@ -838,7 +870,7 @@ def generalize_spatial_relations_parallel(clustered_results: dict, max_workers=1
                 })
                 final_results.append(res)
 
-    print(f"正在写入归纳结果 (共 {len(final_results)} 条关系)...")
+    print(f"Writing generalized results ({len(final_results)} relationships)...")
     for res in final_results:
         m_cause = MergeDisasterEvent.nodes.filter(event_description=res['cause_desc_gen'],
                                                   cluster_pattern=res['current_cluster_id']).first_or_none()
@@ -883,6 +915,8 @@ def generalize_observation_patterns():
     Generalizes specific observation metrics (spatial/temporal resolution, weather effects,
     and positions) into GeneralizedObservationPattern nodes and links them to global observation events.
     """
+    spatial_thresholds = get_setting('generalization.observation_resolution.spatial_thresholds_m')
+    temporal_thresholds = get_setting('generalization.observation_resolution.temporal_thresholds_hours')
     global_disaster_nodes = GlobalDisasterEvent.nodes.all()
     for global_disaster_node in global_disaster_nodes:
         gen_obs_nodes = global_disaster_node.trigger.all()
@@ -890,8 +924,10 @@ def generalize_observation_patterns():
             obs_nodes = gen_obs_node.include.all()
             sensor_nodes = gen_obs_node.sensor_argument.all()
             if sensor_nodes:
-                sensor = sensor_nodes[0].sensor_type
-                platform = sensor_nodes[0].platform
+                sensor = english_term(sensor_nodes[0].sensor_type, strict=True)
+                platform = english_term(sensor_nodes[0].platform, strict=True)
+                if not sensor or not platform:
+                    continue
             else:
                 continue
 
@@ -910,23 +946,23 @@ def generalize_observation_patterns():
             for obs_pattern_node in obs_pattern_nodes:
                 space_res = obs_pattern_node.space_res
                 time_res = obs_pattern_node.time_res
-                obs_position = obs_pattern_node.obs_position
-                weather_effect = obs_pattern_node.weather_effect
+                obs_position = english_term(obs_pattern_node.obs_position, strict=True)
+                weather_effect = english_term(obs_pattern_node.weather_effect, strict=True)
 
                 if isinstance(space_res, (int, float)) and space_res > 0:
-                    if space_res < 1:
+                    if space_res < spatial_thresholds[0]:
                         space_res_dict['Ultra-high Resolution'] += 1
-                    elif space_res < 10:
+                    elif space_res < spatial_thresholds[1]:
                         space_res_dict['High Resolution'] += 1
-                    elif space_res < 100:
+                    elif space_res < spatial_thresholds[2]:
                         space_res_dict['Medium Resolution'] += 1
                     else:
                         space_res_dict['Low Resolution'] += 1
 
                 if isinstance(time_res, (int, float)) and time_res > 0:
-                    if time_res < 1:
+                    if time_res < temporal_thresholds[0]:
                         time_res_dict['Ultra-high Frequency'] += 1
-                    elif time_res <= 24:
+                    elif time_res <= temporal_thresholds[1]:
                         time_res_dict['High Frequency'] += 1
                     else:
                         time_res_dict['Low Frequency'] += 1
@@ -1100,23 +1136,26 @@ def pattern_statistics():
         reverse=True
     )
 
-    output_file = "data/disaster_pattern_stats_07.json"
+    output_file = get_configured_path('generalization.paths.pattern_statistics', create_parent=True)
     try:
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(sorted_patterns, f, ensure_ascii=False, indent=4)
-        print(f"统计结果已成功保存至: {output_file}")
+        print(f"Statistics saved to: {output_file}")
     except Exception as e:
-        print(f"保存文件失败: {e}")
+        print(f"Failed to save file: {e}")
 
     return sorted_patterns
 
 
-def extract_standard_factor_observations(output_path="data/standard_factor_observations.json"):
+def extract_standard_factor_observations(output_path=None):
     """
     Queries the database to map StandardFactors to their corresponding ObservationEvents
     and exports this structured association data to a JSON file.
     """
-    print("🔍 正在从数据库拉取 StandardFactor 与 Observation 的关联数据...")
+    output_path = (get_configured_path('generalization.paths.standard_factor_observations')
+                   if output_path is None else str(resolve_project_path(output_path)))
+    resolve_project_path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    print("🔍 Fetching StandardFactor and Observation associations...")
 
     query = """
     MATCH (sf:StandardFactor)--(f:Factor)--(obs:ObservationEvent)
@@ -1142,31 +1181,31 @@ def extract_standard_factor_observations(output_path="data/standard_factor_obser
     try:
         results, meta = db.cypher_query(query)
     except Exception as e:
-        print(f"❌ 数据库查询失败，请检查连接: {e}")
+        print(f"❌ Database query failed; check the connection: {e}")
         return {}
 
     factor_obs_dict = {}
 
     for row in results:
-        standard_factor_name = row[0]
+        standard_factor_name = english_term(row[0], strict=True)
         if not standard_factor_name:
             continue
 
         obs_info = {
             "observation_description": row[1] or "",
             "sensor": {
-                "sensor_type": row[2] or "",
-                "platform": row[3] or ""
+                "sensor_type": english_term(row[2] or "", strict=True),
+                "platform": english_term(row[3] or "", strict=True)
             },
             "geo_object": {
-                "geo_type": row[4] or "",
-                "geo_name": row[5] or ""
+                "geo_type": english_term(row[4] or "", strict=True),
+                "geo_name": english_term(row[5] or "")
             },
             "observation_pattern": {
                 "space_res": row[6] or "",
                 "time_res": row[7] or "",
-                "obs_position": row[8] or "",
-                "weather_effect": row[9] or ""
+                "obs_position": english_term(row[8] or "", strict=True),
+                "weather_effect": english_term(row[9] or "", strict=True)
             }
         }
 
@@ -1176,14 +1215,14 @@ def extract_standard_factor_observations(output_path="data/standard_factor_obser
         if obs_info not in factor_obs_dict[standard_factor_name]:
             factor_obs_dict[standard_factor_name].append(obs_info)
 
-    print(f"✅ 数据提取完成，共获取到 {len(factor_obs_dict)} 个标准指标的观测数据。")
+    print(f"✅ Data extraction completed; obtained observations for {len(factor_obs_dict)} standard factors.")
 
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(factor_obs_dict, f, ensure_ascii=False, indent=4)
-        print(f"💾 结果已成功保存至: {output_path}")
+        print(f"💾 Results saved to: {output_path}")
     except Exception as e:
-        print(f"❌ 保存 JSON 文件失败: {e}")
+        print(f"❌ Failed to save JSON file: {e}")
 
 
     return factor_obs_dict
@@ -1195,6 +1234,8 @@ def construct_public_gen_obs(factor, geo_type, factor_obs):
     Constructs public GeneralizedObservationEvent nodes based on standard factor observations,
     generalizing the associated sensor, platform, and observation pattern details.
     """
+    spatial_thresholds = get_setting('generalization.observation_resolution.spatial_thresholds_m')
+    temporal_thresholds = get_setting('generalization.observation_resolution.temporal_thresholds_hours')
     relate_obs = []
     obs_list = factor_obs.get(factor, [])
     for obs in obs_list:
@@ -1240,18 +1281,18 @@ def construct_public_gen_obs(factor, geo_type, factor_obs):
                 pat = o.get('observation_pattern', {})
                 space_res = pat.get('space_res', '')
                 time_res = pat.get('time_res', '')
-                obs_position = pat.get('obs_position', '')
-                weather_effect = pat.get('weather_effect', '')
+                obs_position = english_term(pat.get('obs_position', ''), strict=True)
+                weather_effect = english_term(pat.get('weather_effect', ''), strict=True)
 
                 # Calculate spatial resolution (add exception handling for dirty data)
                 try:
                     sr_val = float(space_res) if space_res else -1
                     if sr_val > 0:
-                        if sr_val < 1:
+                        if sr_val < spatial_thresholds[0]:
                             space_res_dict['Ultra-high Resolution'] += 1
-                        elif sr_val < 10:
+                        elif sr_val < spatial_thresholds[1]:
                             space_res_dict['High Resolution'] += 1
-                        elif sr_val < 100:
+                        elif sr_val < spatial_thresholds[2]:
                             space_res_dict['Medium Resolution'] += 1
                         else:
                             space_res_dict['Low Resolution'] += 1
@@ -1262,9 +1303,9 @@ def construct_public_gen_obs(factor, geo_type, factor_obs):
                 try:
                     tr_val = float(time_res) if time_res else -1
                     if tr_val > 0:
-                        if tr_val < 1:
+                        if tr_val < temporal_thresholds[0]:
                             time_res_dict['Ultra-high Frequency'] += 1
-                        elif tr_val <= 24:
+                        elif tr_val <= temporal_thresholds[1]:
                             time_res_dict['High Frequency'] += 1
                         else:
                             time_res_dict['Low Frequency'] += 1
@@ -1303,7 +1344,7 @@ def construct_public_gen_obs(factor, geo_type, factor_obs):
             if sensor == 'Passive Optical Sensor':
                 if 'Obscured by Clouds and Fog' not in weather_effect_list:
                     weather_effect_list.append('Obscured by Clouds and Fog')
-                if 'Limited by Illumination Condition' not in weather_effect_list:
+                if 'Limited by Illumination Conditions' not in weather_effect_list:
                     weather_effect_list.append('Limited by Illumination Conditions')
                 if 'All-weather Observation' in weather_effect_list:
                     weather_effect_list.remove('All-weather Observation')
@@ -1367,7 +1408,7 @@ def construct_observation_events_all():
     """
     g_disaster_nodes = GlobalDisasterEvent.nodes.all()
     # factor_obs = extract_standard_factor_observations()
-    with open('./data/standard_factor_observations_1.json', 'r', encoding='utf-8') as f:
+    with open(get_configured_path('generalization.paths.standard_factor_observations'), 'r', encoding='utf-8') as f:
         factor_obs = json.load(f)
 
     for g_disaster_node in g_disaster_nodes:
@@ -1403,7 +1444,7 @@ def construct_observation_events_all():
                 for gen_obs in existing_obs_nodes:
                     if not g_disaster_node.trigger.is_connected(gen_obs):
                         g_disaster_node.trigger.connect(gen_obs)
-                        print(f"🔗 [直接连接 existing_trigger]: ({g_disaster_desc}) -> ({gen_obs.event_description})")
+                        print(f"🔗 [Direct existing_trigger link]: ({g_disaster_desc}) -> ({gen_obs.event_description})")
             else:
                 new_gen_obs_nodes = construct_public_gen_obs(factor_name, g_geo_type, factor_obs)
 
@@ -1411,7 +1452,7 @@ def construct_observation_events_all():
                 for gen_obs in new_gen_obs_nodes:
                     if not g_disaster_node.trigger.is_connected(gen_obs):
                         g_disaster_node.trigger.connect(gen_obs)
-                        print(f"✨ [构建并连接 new_trigger]: ({g_disaster_desc}) -> ({gen_obs.event_description})")
+                        print(f"✨ [Create and link new_trigger]: ({g_disaster_desc}) -> ({gen_obs.event_description})")
 
 
 def fetch_env_rule(event_description, envDes, addition_info):
@@ -1429,15 +1470,19 @@ def fetch_env_rule(event_description, envDes, addition_info):
         return env_rules
 
 
-def generate_env_rule_to_database_parallel(elevation=120, max_workers=10):
+def generate_env_rule_to_database_parallel(elevation=None, max_workers=None):
     """
     Coordinates parallel LLM requests to generate environmental rules for disaster
     events and safely writes the returned rules back to the database in the main thread.
     """
+    if elevation is None:
+        elevation = get_setting('generalization.environment.elevation')
+    if max_workers is None:
+        max_workers = get_setting('generalization.environment.workers')
     disasters = MergeDisasterEvent.nodes.all()
     tasks_payload = []
 
-    print("开始扫描数据库，准备任务...")
+    print("Scanning the database and preparing tasks...")
     for disaster in disasters:
         scd_disaster = disaster.cause.all()
         for scd in scd_disaster:
@@ -1458,12 +1503,12 @@ def generate_env_rule_to_database_parallel(elevation=120, max_workers=10):
                         'addition_info': {'elevation': elevation}
                     })
 
-    print(f"数据库扫描完毕，共发现 {len(tasks_payload)} 个待处理任务。")
+    print(f"Database scan completed; found {len(tasks_payload)} tasks.")
 
     collected_results = []
 
     if tasks_payload:
-        print("开始并发请求大模型...")
+        print("Starting concurrent model requests...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_task = {}
 
@@ -1483,10 +1528,10 @@ def generate_env_rule_to_database_parallel(elevation=120, max_workers=10):
                     env_rules = future.result()
                     collected_results.append((task['disaster_node'], env_rules))
                 except Exception as exc:
-                    print(f"节点 [{task['event_description']}] 的网络请求或转换报错: {exc}")
+                    print(f"Node [{task['event_description']}] network request or conversion failed: {exc}")
 
     if collected_results:
-        print(f"网络请求完毕，准备将 {len(collected_results)} 条结果写入数据库...")
+        print(f"Network requests completed; preparing to write {len(collected_results)} results to the database...")
         for disaster, env_rules in collected_results:
             try:
                 rule_node = EnvironmentRule(rules=env_rules).save()
@@ -1494,11 +1539,11 @@ def generate_env_rule_to_database_parallel(elevation=120, max_workers=10):
                 if not disaster.envRule_argument.is_connected(rule_node):
                     disaster.envRule_argument.connect(rule_node)
 
-                print(f"成功保存规则并建立连接: {env_rules}")
+                print(f"Rule saved and linked: {env_rules}")
             except Exception as exc:
-                print(f"将规则写入数据库时发生错误: {exc}")
+                print(f"Failed to write rule to database: {exc}")
 
-    print("全部任务处理完毕！")
+    print("All tasks completed!")
 
 
 
@@ -1513,10 +1558,21 @@ class ClassifyInfo(BaseModel):
     reasoning: str = Field(..., description="简述判别理由")
 
 
+class ClassifyInfo_en(BaseModel):
+    sensor_type: Literal['Active Optical Sensor', 'Passive Optical Sensor', 'Active Microwave Sensor', 'Passive Microwave Sensor', 'Other Sensor'] = Field(
+        description="Sensor category"
+    )
+    reasoning: str = Field(..., description="Briefly explain the classification")
+
+
 def fetch_llm_classification(sensor_id, sensor_name):
     """
     Prompts the LLM to classify a sensor name into specific predefined categories
     (e.g., Active Optical, Passive Microwave) in a thread-safe manner.
+
+
+    This is the primary execution function. Since the corpus is predominantly
+    Chinese, the prompt is in Chinese. See fetch_llm_classification_en for the English version.
     """
     try:
         sys_prompt = """
@@ -1531,17 +1587,44 @@ def fetch_llm_classification(sensor_id, sensor_name):
         output = agent.invoke(
             {"messages": [{"role": "user", "content": f"name=‘{sensor_name}’"}]}
         )
-        sensor_type = output["structured_response"].sensor_type
+        sensor_type = english_term(output["structured_response"].sensor_type, strict=True)
         return sensor_id, sensor_type, None  # 返回 ID, 结果, 无错误
     except Exception as e:
         return sensor_id, None, str(e)  # 返回错误信息
 
 
-def sensor_reclassify_parallel(max_workers=10):
+def fetch_llm_classification_en(sensor_id, sensor_name):
+    """
+    Prompts the LLM to classify a sensor name into specific predefined categories
+    (e.g., Active Optical, Passive Microwave) in a thread-safe manner.
+    """
+    try:
+        sys_prompt = """
+            You are a geospatial sensor-network expert. Classify the sensor.
+            ### Role and objective
+            Determine which category the input sensor name belongs to:
+            [Active Optical Sensor, Passive Optical Sensor, Active Microwave Sensor, Passive Microwave Sensor, Other Sensor].
+        """
+
+        agent = create_agent(llm, system_prompt=sys_prompt, response_format=ClassifyInfo_en)
+
+        output = agent.invoke(
+            {"messages": [{"role": "user", "content": f"name=‘{sensor_name}’"}]}
+        )
+        sensor_type = output["structured_response"].sensor_type
+        return sensor_id, sensor_type, None  # Return ID, result, and no error
+    except Exception as e:
+        return sensor_id, None, str(e)  # Return the error message
+
+
+
+def sensor_reclassify_parallel(max_workers=None):
     """
     Manages concurrent LLM calls to reclassify all sensor entities in the database
     and sequentially applies the updated classifications to the Neo4j nodes.
     """
+    if max_workers is None:
+        max_workers = get_setting('generalization.sensor_workers')
     sensors = Sensor.nodes.all()
 
     sensor_map = {sensor.element_id: sensor for sensor in sensors}
@@ -1557,13 +1640,13 @@ def sensor_reclassify_parallel(max_workers=10):
         for future in concurrent.futures.as_completed(futures):
             sensor_id, sensor_type, error = future.result()
             if error:
-                print(f"[LLM 异常] 节点 {sensor_id}: {error}")
-            elif sensor_type in ['主动光学传感器', '被动光学传感器', '主动微波传感器', '被动微波传感器', '其它传感器']:
+                print(f"[LLM error] Node {sensor_id}: {error}")
+            elif sensor_type in sensor_types_en:
                 classification_results.append((sensor_id, sensor_type))
             else:
-                print(f"[跳过] 节点 {sensor_id} 类别不在预期内: {sensor_type}")
+                print(f"[Skipped] Node {sensor_id} has an unexpected type: {sensor_type}")
 
-    print(f"LLM 推理完成，准备将 {len(classification_results)} 条结果写入数据库...")
+    print(f"LLM inference completed; preparing to write {len(classification_results)} results to the database...")
 
     for sensor_id, target_type in classification_results:
         try:
@@ -1571,15 +1654,18 @@ def sensor_reclassify_parallel(max_workers=10):
             target_sensor.sensor_type = target_type
             target_sensor.save()
         except Exception as db_err:
-            print(f"[数据库写入异常] 节点 {sensor_id}: {db_err}")
+            print(f"[Database write error] Node {sensor_id}: {db_err}")
 
 
-def extract_typical_key_paths(hops=4, top_n=20):
+def extract_typical_key_paths(hops=None, top_n=None):
     """
     Uses APOC path expansion to extract multi-hop causal chains among global disaster events,
     deduplicates them, and returns the top paths sorted by cumulative confidence and frequency.
     """
-    print(f"\n正在提取固定的 {hops} 跳典型关键链式路径 (自动去重)...")
+    settings = get_setting('generalization.statistics.paths')
+    hops = settings['default_hops'] if hops is None else hops
+    top_n = settings['default_top_n'] if top_n is None else top_n
+    print(f"\nExtracting fixed {hops}-hop typical key paths (deduplicated)...")
 
     start_nodes_query = """
     MATCH (start:GlobalDisasterEvent)-[:CAUSE]->()
@@ -1589,7 +1675,7 @@ def extract_typical_key_paths(hops=4, top_n=20):
 
     best_chains_dict = {}
 
-    for row in tqdm(start_results, desc='路径读取 (APOC + 去重)'):
+    for row in tqdm(start_results, desc='Path retrieval (APOC + deduplication)'):
         start_id = row[0]
 
         path_query = """
@@ -1602,18 +1688,17 @@ def extract_typical_key_paths(hops=4, top_n=20):
             minLevel: $hops,
             maxLevel: $hops,
             uniqueness: 'NODE_PATH',
-            limit: 10000  // 防止单节点超级发散
+            limit: $per_node_limit
         }) YIELD path AS p
 
         WITH p, 
              [n IN nodes(p) | n.event_description] AS event_chain,
              relationships(p) AS rels
 
-        // 剔除单步置信度过低的关系 (可选，这里设为0.01可过滤掉明显的垃圾数据)
-        WHERE ALL(r IN rels WHERE coalesce(r.confidence, 0.001) >= 0.01)
+        WHERE ALL(r IN rels WHERE coalesce(r.confidence, $missing_confidence) >= $minimum_confidence)
 
         WITH p, event_chain, rels,
-             reduce(score = 1.0, r IN rels | score * coalesce(r.confidence, 0.001)) AS path_confidence,
+             reduce(score = 1.0, r IN rels | score * coalesce(r.confidence, $missing_confidence)) AS path_confidence,
              reduce(total = 0, r IN rels | total + coalesce(r.relation_count, 0)) AS path_freq
 
         RETURN event_chain, path_confidence, path_freq
@@ -1621,7 +1706,10 @@ def extract_typical_key_paths(hops=4, top_n=20):
 
         params = {
             'start_id': start_id,
-            'hops': hops
+            'hops': hops,
+            'per_node_limit': settings['per_node_limit'],
+            'minimum_confidence': settings['minimum_confidence'],
+            'missing_confidence': settings['missing_confidence']
         }
 
         try:
@@ -1641,7 +1729,7 @@ def extract_typical_key_paths(hops=4, top_n=20):
                             best_chains_dict[chain_tuple] = (path_confidence, path_freq)
 
         except Exception as e:
-            print(f"节点 {start_id} 路径提取失败: {e}")
+            print(f"Node {start_id} path extraction failed: {e}")
             continue
 
     all_unique_paths = []
@@ -1652,7 +1740,7 @@ def extract_typical_key_paths(hops=4, top_n=20):
     top_paths = all_unique_paths[:top_n]
 
     print("-" * 120)
-    print(f"{'灾害演化链 (Event Chain)':<70} | {'综合置信度':<12} | {'总频次':<8} | {'跳数'}")
+    print(f"{'Event chain':<70} | {'Confidence':<12} | {'Frequency':<8} | {'Hops'}")
     print("-" * 120)
 
     for item in top_paths:
@@ -1707,15 +1795,15 @@ def analyze_disaster_and_observation_stats():
     total_triggers = trigger_results[0][1] or 0
     avg_obs_per_disaster = trigger_results[0][2] or 0
 
-    print("\n## 灾害事理图谱泛化层统计报告 ##")
+    print("\n## Generalized disaster knowledge graph statistics ##")
     print("-" * 50)
-    print(f"泛化灾害事件(GlobalDisasterEvent)总数: {total_nodes}")
-    print(f"平均出度 (Average Out-degree):        {avg_out_degree:.4f}")
-    print(f"平均入度 (Average In-degree):         {avg_in_degree:.4f}")
+    print(f"Total generalized disaster events (GlobalDisasterEvent): {total_nodes}")
+    print(f"Average out-degree:        {avg_out_degree:.4f}")
+    print(f"Average in-degree:         {avg_in_degree:.4f}")
     print("-" * 50)
-    print(f"存在触发观测能力的灾害事件个数:        {disaster_with_trigger}")
-    print(f"总观测触发关系(TRIGGER)数量:          {total_triggers}")
-    print(f"平均每个灾害事件可触发观测事件个数:     {avg_obs_per_disaster:.4f}")
+    print(f"Disaster events with observation triggers:        {disaster_with_trigger}")
+    print(f"Total observation trigger relationships (TRIGGER):          {total_triggers}")
+    print(f"Average observation events triggered per disaster:     {avg_obs_per_disaster:.4f}")
     print("-" * 50)
 
     return {
@@ -1730,11 +1818,13 @@ def analyze_disaster_and_observation_stats():
 import pandas as pd
 
 
-def find_top_influence_disasters(top_n=10):
+def find_top_influence_disasters(top_n=None):
     """
     Identifies and prints the top 'source' disasters (highest out-degree) and
     'composite' disasters (highest in-degree) to evaluate disaster influence and vulnerability.
     """
+    if top_n is None:
+        top_n = get_setting('generalization.statistics.influence_top_n')
     query = """
     MATCH (n:GlobalDisasterEvent)
     OPTIONAL MATCH (n)-[out:CAUSE]->()
@@ -1753,21 +1843,23 @@ def find_top_influence_disasters(top_n=10):
 
     composite_disasters = df.sort_values(by='入度(受灾)', ascending=False).head(top_n)
 
-    print(f"\n=== Top {top_n} 源头灾害 (影响力最强，易诱发其他灾害) ===")
+    print(f"\n=== Top {top_n} source disasters (highest influence) ===")
     print(source_disasters[['事件类型', '出度(诱发)']].to_string(index=False))
 
-    print(f"\n=== Top {top_n} 复合灾害 (脆弱性最高，易受多种灾害影响) ===")
+    print(f"\n=== Top {top_n} compound disasters (highest vulnerability) ===")
     print(composite_disasters[['事件类型', '入度(受灾)']].to_string(index=False))
 
     return source_disasters, composite_disasters
 
 
-def find_top_hub_disasters(top_n=10):
+def find_top_hub_disasters(top_n=None):
     """
     Identifies and prints the top 'hub' disasters, defined as those with the highest
     combined out-degree and in-degree, representing critical nexus points in disaster chains.
     """
 
+    if top_n is None:
+        top_n = get_setting('generalization.statistics.hub_top_n')
     query = """
     MATCH (n:GlobalDisasterEvent)
     OPTIONAL MATCH (n)-[out:CAUSE]->()
@@ -1788,7 +1880,7 @@ def find_top_hub_disasters(top_n=10):
     # 转换为 DataFrame 展示
     df = pd.DataFrame(results, columns=['事件类型', '出度(诱发)', '入度(受灾)', '总度数(枢纽强度)'])
 
-    print(f"\n=== Top {top_n} 核心枢纽灾害 (灾害链中关联最密集的节点) ===")
+    print(f"\n=== Top {top_n} disaster hubs (most connected nodes) ===")
     print("-" * 75)
     print(df.to_string(index=False))
     print("-" * 75)
@@ -1810,8 +1902,8 @@ def connect_disaster_trigger_relate_obs():
         impact_name = disaster.impact_argument.all()[0].impact_name
 
         relate_event = None
-        if geo_name != '行政区':
-            relate_event_desc = f"行政区,{impact_name}"
+        if geo_name != 'Administrative Region':
+            relate_event_desc = f"Administrative Region,{impact_name}"
             if relate_event_desc not in _RELATE_EVENT_CACHE:
                 _RELATE_EVENT_CACHE[relate_event_desc] = GlobalDisasterEvent.nodes.first_or_none(
                     event_description=relate_event_desc)
@@ -1833,18 +1925,21 @@ def connect_disaster_trigger_relate_obs():
                     disaster.trigger.connect(obs_event)
 
 
-def export_disaster_observation_to_json(output_path="data/disaster_observations_export_3zz.json"):
+def export_disaster_observation_to_json(output_path=None):
     """
     Exports the complete hierarchy of GlobalDisasterEvents along with their triggered
     GeneralizedObservationEvents (including sensors, factors, and patterns) to a JSON file.
     """
+    output_path = (get_configured_path('generalization.paths.observation_export')
+                   if output_path is None else str(resolve_project_path(output_path)))
+    resolve_project_path(output_path).parent.mkdir(parents=True, exist_ok=True)
     export_data = []
 
     g_disaster_nodes = GlobalDisasterEvent.nodes.all()
 
-    print(f"开始导出 {len(g_disaster_nodes)} 个全局灾害事件的数据...")
+    print(f"Starting export of {len(g_disaster_nodes)} global disaster events...")
 
-    for g_disaster_node in tqdm(g_disaster_nodes, desc="导出进度"):
+    for g_disaster_node in tqdm(g_disaster_nodes, desc="Export progress"):
         disaster_info = {
             "disaster_event_description": g_disaster_node.event_description,
             "triggered_observations": []
@@ -1886,59 +1981,7 @@ def export_disaster_observation_to_json(output_path="data/disaster_observations_
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(export_data, f, ensure_ascii=False, indent=4)
-        print(f"\n导出成功！数据已保存至: {output_path}")
+        print(f"\nExport completed; data saved to: {output_path}")
     except Exception as e:
-        print(f"\n保存 JSON 文件时发生错误: {e}")
+        print(f"\nFailed to save JSON file: {e}")
 
-
-if __name__ == '__main__':
-    # database = 'events-zhengzhou-ifs-nocause'
-    # database = 'events-do-gen'
-    database = 'events-logic-all-1zz-ori'
-    neo = Neo4jDatabaseConnector(database)
-
-    main_factor_map_parallel_1(neo, database)
-
-    # 执行灾害事件对泛化
-    disaster_core = get_geo_impact_pair()
-    print(disaster_core)
-    disaster_pair_clustered = similarity_calculation(disaster_core)
-    disaster_pair_clustered = {}
-    for key, value in disaster_core.items():
-        disaster_pair_clustered[key] = [value]
-    with open("all-cluster.pickle", "rb") as f:
-        disaster_pair_clustered = pickle.load(f)
-    process_abstract_clustering_to_graph(disaster_pair_clustered)
-    generalize_spatial_relations_parallel(disaster_pair_clustered, 20)
-    _link_envDes_to_origin_event()
-    _append_cause_count_to_global_cause()
-    calculate_global_event_causal_confidence()
-    output_top_causal_pairs(50)
-    generate_env_rule_to_database_parallel()
-
-    # 执行观测事件泛化
-    construct_generalized_observation_event()
-    construct_global_disaster_arguments()
-    update_global_DO_argument()
-    generalize_observation_patterns()
-
-    pattern_statistics()
-    # construct_observation_events()
-
-    extract_typical_key_paths(hops=3, top_n=100)
-    analyze_disaster_and_observation_stats()
-    find_top_influence_disasters()
-    find_top_hub_disasters()
-    connect_disaster_trigger_relate_obs()
-
-    migrate_observation_knowledge(source_db='events-do-gen-2', target_db='events-logic-all-1zz')
-
-    construct_observation_events_all()
-    export_disaster_observation_to_json()
-
-    with open("data/pickles/factor_map.pickle", "rb") as f:
-        factor_map = pickle.load(f)
-    main_factor_map_(neo, 'events-logic-all-1zz-sensor', factor_map)
-    extract_standard_factor_observations("data/standard_factor_observations_1.json")
-
-    sensor_reclassify_parallel()
