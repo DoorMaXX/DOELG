@@ -31,7 +31,6 @@ from generalization import (
 )
 from other.factor_map import main_factor_map_parallel_1
 
-
 # ==========================================
 # 1. PHASE 1: DISASTER EVENT GENERALIZATION
 # ==========================================
@@ -247,16 +246,12 @@ def main():
 
     if args.task == 'disaster_gen':
         run_disaster_generalization(args.workers)
-
     elif args.task == 'spatial_rule':
         run_spatial_and_env_rules(None, args.workers)
-
     elif args.task == 'obs_gen':
         run_observation_generalization(neo_connector, args.workers)
-
     elif args.task == 'stats':
         run_statistics()
-
     elif args.task == 'all':
         print("\n🚀 [Pipeline Mode] Initiating End-to-End Generalization Pipeline...")
 

@@ -448,7 +448,6 @@ def plot_event_specific_importance_field_basemap(
                         dtype=np.float32
                     )
                     importance_grid = np.maximum(importance_grid, poly_raster)
-
                 else:
                     points = []
                     if geom.geom_type == "Point":
@@ -860,7 +859,7 @@ def plot_factor_specific_importance_field_basemap(
 
                 feature_type = str(row.get("osm_id", "")).split("_")[0]
                 type_weight = observation_importance.get(feature_type, 1.0)
-                
+
                 final_value = base_importance * type_weight
 
                 if geom.geom_type in ["Polygon", "MultiPolygon"]:

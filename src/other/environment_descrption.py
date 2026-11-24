@@ -87,7 +87,6 @@ def get_event_envDes_llm_en(text, event_des):
     return output["structured_response"]
 
 
-
 def get_save_event_envDes(event_node):
     """
     Retrieves the original text for an event node, uses the LLM to extract
@@ -206,7 +205,6 @@ def get_env_rule_chain_en(event: str, env_description: str, addition_info: dict)
                        "content": f"The current disaster event is ‘{event}’; its hazard-formative environment is {env_description}’; the regional mean elevation is {avg_elevation} meters"}]}
     )
     return output["structured_response"]
-
 
 
 def evaluate_feature_against_rule(feature, rule_data) -> bool:

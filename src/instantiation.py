@@ -82,8 +82,6 @@ def get_event_impact_type(event: Any, event_description: Optional[str] = None) -
             if impact_type:
                 break
     except (AttributeError, TypeError):
-        
-        
         pass
 
     if not impact_type and "," in description:
@@ -158,17 +156,13 @@ def load_geojson_data(geo_name, region_extent=None):
         return None
 
     try:
-        
         gdf = gpd.read_file(file_path)
         if gdf.empty:
             return gdf
 
-        
         gdf['osm_id'] = [f"{geo_name}_{i}" for i in range(len(gdf))]
 
-        
         if region_extent is not None:
-            
             if isinstance(region_extent, (Polygon, MultiPolygon)):
                 region_gdf = gpd.GeoDataFrame({'geometry': [region_extent]}, crs="EPSG:4326")
             elif isinstance(region_extent, gpd.GeoDataFrame):
@@ -177,16 +171,12 @@ def load_geojson_data(geo_name, region_extent=None):
                 region_gdf = None
 
             if region_gdf is not None:
-                
                 if gdf.crs != region_gdf.crs:
                     region_gdf = region_gdf.to_crs(gdf.crs)
 
-                
-                
                 gdf = gpd.clip(gdf, region_gdf)
 
         return gdf
-
     except Exception as e:
         print(f"Error loading and clipping {file_path}: {e}")
         return None
@@ -195,11 +185,9 @@ def load_geojson_data(geo_name, region_extent=None):
 def get_cached_geojson(geo_name, region_extent=None):
     """Return the cached feature layer in projected coordinates."""
     if geo_name not in _GEOJSON_CACHE:
-        
         gdf = load_geojson_data(geo_name, region_extent=region_extent)
 
         if gdf is not None and not gdf.empty:
-            
             _GEOJSON_CACHE[geo_name] = gdf.to_crs(epsg=3857)
         else:
             _GEOJSON_CACHE[geo_name] = None
@@ -215,13 +203,10 @@ def get_downstream_path(start_ids, adjacency_map, max_depth=1000):
 
     depth = 0
     while queue and depth < max_depth:
-        
         next_queue = []
         for current_id in queue:
-            
             downstream_ids.add(current_id)
 
-            
             next_id = adjacency_map.get(current_id, 0)
             if next_id != 0 and next_id not in visited:
                 visited.add(next_id)
@@ -240,51 +225,33 @@ def calculate_up_down_stream(ori_geom_proj, scd_gdf_proj, scd_geo_name):
     if HYBAS_GDF is None or scd_gdf_proj.empty:
         return results
 
-    
-    
     ori_gs_wgs84 = gpd.GeoSeries([ori_geom_proj], crs="EPSG:3857").to_crs(epsg=4326)
     ori_geom_wgs84 = ori_gs_wgs84.iloc[0]
 
     scd_gdf_wgs84 = scd_gdf_proj.to_crs(epsg=4326)
 
-    
-    
     source_basins = HYBAS_GDF[HYBAS_GDF.intersects(ori_geom_wgs84)]
     if source_basins.empty:
         return []
 
     source_ids = set(source_basins['HYBAS_ID'])
 
-    
-    
     risk_basin_ids = get_downstream_path(source_ids, BASIN_ADJ_MAP)
 
-    
-    
     risk_basins_gdf = HYBAS_GDF[HYBAS_GDF['HYBAS_ID'].isin(risk_basin_ids)]
 
-    
-    
-
-    
-    
     affected_scd_wgs84 = gpd.sjoin(scd_gdf_wgs84, risk_basins_gdf, how='inner', predicate='intersects')
 
     if affected_scd_wgs84.empty:
         return []
 
-    
-    
     affected_scd_proj = affected_scd_wgs84.to_crs(epsg=3857)
 
-    
     project_back = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True).transform
 
     for idx, row in affected_scd_proj.iterrows():
-        
         dist = row.geometry.distance(ori_geom_proj)
 
-        
         if dist < 1000:
             priority = 1
             importance = 50
@@ -295,7 +262,6 @@ def calculate_up_down_stream(ori_geom_proj, scd_gdf_proj, scd_geo_name):
             priority = 3
             importance = 10
 
-        
         clean_props = {}
         orig_cols = scd_gdf_proj.columns
         for k, v in row.items():
@@ -309,7 +275,6 @@ def calculate_up_down_stream(ori_geom_proj, scd_gdf_proj, scd_geo_name):
 
         clean_props['_geo_unique_id'] = idx
 
-        
         geom_wgs84 = transform(project_back, row.geometry)
 
         results.append({
@@ -327,7 +292,6 @@ def calculate_up_down_stream(ori_geom_proj, scd_gdf_proj, scd_geo_name):
 
 
 def calculate_topology_distance(ori_geom_proj, scd_gdf_proj, scd_geo_name, topology, distance_desc):
-    
     """Rank secondary features by their distance from the source geometry."""
     max_dist = 0
     results = []
@@ -345,7 +309,6 @@ def calculate_topology_distance(ori_geom_proj, scd_gdf_proj, scd_geo_name, topol
     active_levels = [d for d in LEVELS if d <= max_dist]
     active_levels = [d for d in active_levels if LEVELS.index(d) >= start_level_idx]
 
-    
     processed_indices = set()
 
     for dist in active_levels:
@@ -367,7 +330,7 @@ def calculate_topology_distance(ori_geom_proj, scd_gdf_proj, scd_geo_name, topol
 
         for idx, row in new_hits_geo.iterrows():
             clean_props = {}
-            
+
             for k, v in row.drop('geometry').to_dict().items():
                 if pd.isna(v):
                     clean_props[k] = None
@@ -376,7 +339,6 @@ def calculate_topology_distance(ori_geom_proj, scd_gdf_proj, scd_geo_name, topol
                 else:
                     clean_props[k] = v
 
-            
             clean_props['_geo_unique_id'] = idx
 
             results.append({
@@ -396,27 +358,20 @@ def calculate_topology_distance_single(ori_geom_proj, scd_gdf_proj, scd_geo_name
     """Find secondary features intersecting the source geometry."""
     results = []
 
-    
-    
     intersecting_gdf = scd_gdf_proj[scd_gdf_proj.geometry.intersects(ori_geom_proj)]
 
-    
     if intersecting_gdf.empty:
         return results
 
-    
-    
     current_priority = 0
 
-    
     importance = IMP[0] if 'IMP' in globals() else 1.0
 
-    
     new_hits_geo = intersecting_gdf.to_crs(epsg=4326)
 
     for idx, row in new_hits_geo.iterrows():
         clean_props = {}
-        
+
         for k, v in row.drop('geometry').to_dict().items():
             if pd.isna(v):
                 clean_props[k] = None
@@ -425,7 +380,6 @@ def calculate_topology_distance_single(ori_geom_proj, scd_gdf_proj, scd_geo_name
             else:
                 clean_props[k] = v
 
-        
         clean_props['_geo_unique_id'] = idx
 
         results.append({
@@ -704,13 +658,11 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
                                      geo_importance=30.0,
                                      secondary_candidates: Optional[List[Dict[str, Any]]] = None):
     """Calculate secondary disaster features and extents for matrix candidates."""
-    
-    
+
     if ori_extent is None:
         print("Warning: ori_extent is None.")
         return {}
 
-    
     if isinstance(ori_extent, (Polygon, MultiPolygon)):
         ori_gdf = gpd.GeoDataFrame({'geometry': [ori_extent]}, crs="EPSG:4326")
     elif isinstance(ori_extent, gpd.GeoDataFrame):
@@ -718,7 +670,6 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
     else:
         return {}
 
-    
     ori_gdf_proj = ori_gdf.to_crs(epsg=3857)
     ori_geom_proj = ori_gdf_proj.geometry.iloc[0]
 
@@ -726,7 +677,6 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
     region_gdf_proj = None
     if region_extent is not None:
         try:
-            
             if isinstance(region_extent, (Polygon, MultiPolygon)):
                 region_gdf = gpd.GeoDataFrame({'geometry': [region_extent]}, crs="EPSG:4326")
             elif isinstance(region_extent, gpd.GeoDataFrame):
@@ -735,7 +685,6 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
                 print("Warning: unsupported region_extent format; skipping clipping.")
                 region_gdf = None
 
-            
             if region_gdf is not None:
                 region_gdf_proj = region_gdf.to_crs(epsg=3857)
                 region_geom_proj = region_gdf_proj.geometry.iloc[0]
@@ -744,7 +693,6 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
 
     results = {}  
 
-    
     ori_disaster = GlobalDisasterEvent.nodes.first_or_none(event_description=ori_disaster_des)
     if ori_disaster is None:
         print(f"Warning: global disaster event not found: {ori_disaster_des}")
@@ -775,29 +723,21 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
         if ori_geo_name == scd_geo_name:
             continue
 
-        
         full_scd_gdf_proj = get_cached_geojson(scd_geo_name)
         if full_scd_gdf_proj is None or full_scd_gdf_proj.empty:
             continue
 
-        
         if region_gdf_proj is not None:
-            
             try:
                 scd_gdf_proj = gpd.clip(full_scd_gdf_proj, region_gdf_proj)
             except Exception as e:
-                
                 scd_gdf_proj = gpd.GeoDataFrame(columns=full_scd_gdf_proj.columns, crs=full_scd_gdf_proj.crs)
         else:
             scd_gdf_proj = full_scd_gdf_proj
 
         if scd_gdf_proj.empty:
-            
             continue
 
-        
-        
-        
         for relation_record in candidate["relationship_records"]:
             r = relation_record["relationship"]
             base_confidence = relation_record["base_confidence"]
@@ -825,50 +765,15 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
 
                 print(f"Analyzing: {scd_disaster_des} | Relation: {topology} | Distance: {distance_desc}")
 
-                
-                
-                
-                
-                
-                
-                
-
                 up_down_stream_result = []
-                if 'Upstream-Downstream' in up_down_stream:
+                if 'upstream-downstream' in up_down_stream:
                     up_down_stream_result = calculate_up_down_stream(ori_geom_proj, scd_gdf_proj, scd_geo_name)
 
                 topo_dis_result = calculate_topology_distance(ori_geom_proj, scd_gdf_proj, scd_geo_name, topology,
                                                               distance_desc)
-                
-                
-                
-                
 
                 combined_results = topo_dis_result + up_down_stream_result
-                
 
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
                 unique_feature_keys = list(unique_features.keys()).copy()
 
                 env_rules = {}
@@ -893,22 +798,14 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
                         scd_merge.envRule_argument.connect(rule_node)
                     print(env_rules)
 
-                
                 for feature in combined_results:
-                    
-                    
                     feature['properties']['causal_relation_type'] = relation_label
                     feature['properties']['causal_relation_code'] = relation_code
                     feature['properties']['base_confidence'] = base_confidence
                     feature['properties']['effective_confidence'] = confidence
 
-                    
                     f_id = feature['properties']['_geo_unique_id']
 
-                    
-                    
-                    
-                    
                     p_val = feature.get('priority', feature.get('spa_priority', 999))
                     feature['spa_priority'] = p_val  
 
@@ -916,10 +813,8 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
                     feature['importance'] = i_val
 
                     if f_id not in unique_features:
-                        
                         unique_features[f_id] = feature
                     else:
-                        
                         current_stored_p = unique_features[f_id].get('spa_priority', 999)
                         current_stored_i = unique_features[f_id].get('importance', 0)
                         if p_val < current_stored_p:
@@ -928,7 +823,6 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
                             unique_features[f_id]['importance'] = i_val + current_stored_i
 
                 for f_id, feature in unique_features.items():
-                    
                     if 'env_mismatch' in feature['properties']: continue
 
                     if env_rules:
@@ -944,42 +838,33 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
         final_features = list(unique_features.values())
         results[scd_disaster_des] = sorted(final_features, key=lambda x: x['spa_priority'])
 
-        
         if final_features:
-            
             df_features = pd.DataFrame(final_features)
             df_features = df_features[df_features['importance'] >= geo_importance]
 
             if not df_features.empty:
                 gdf_features = gpd.GeoDataFrame(df_features, geometry='geometry', crs="EPSG:4326")
 
-                
                 gdf_proj = gdf_features.to_crs(epsg=3857)
 
-                
                 invalid_mask = ~gdf_proj.is_valid
                 if invalid_mask.any():
                     gdf_proj.loc[invalid_mask, 'geometry'] = gdf_proj[invalid_mask].geometry.buffer(0)
 
-                
                 gdf_proj = gdf_proj[~gdf_proj.is_empty]
                 is_poly = gdf_proj.geom_type.isin(['Polygon', 'MultiPolygon'])
-                
+
                 valid_poly_mask = is_poly & gdf_proj.geometry.apply(
                     lambda g: len(g.exterior.coords) >= 4 if g.geom_type == 'Polygon' else True)
                 gdf_proj = gdf_proj[(~is_poly) | valid_poly_mask]
 
                 if not gdf_proj.empty:
-                    
                     buffered_geos = gdf_proj.geometry.buffer(50)
 
-                    
                     merged_geom_proj = buffered_geos.unary_union
 
-                    
                     if region_geom_proj is not None:
                         try:
-                            
                             if not merged_geom_proj.bounds or not region_geom_proj.intersects(merged_geom_proj):
                                 merged_geom_proj = None
                             else:
@@ -987,9 +872,7 @@ def calculate_second_disaster_extent(ori_disaster_des: str,
                         except Exception as e:
                             print(f"Clipping failed: {e}; retaining the original extent.")
 
-                    
                     if merged_geom_proj is not None and not merged_geom_proj.is_empty:
-                        
                         merged_geom_wgs84 = gpd.GeoSeries([merged_geom_proj], crs="EPSG:3857").to_crs(epsg=4326).iloc[0]
 
                         results[f"{scd_disaster_des}_TOTAL_RANGE"] = [{
@@ -1022,22 +905,19 @@ def export_secondary_disasters_to_geojson(results: dict, geos_output_folder_in):
 
     generated_files = []
 
-    
     for scd_event_des, items_list in results.items():
         if not items_list:
             continue
 
         if "_TOTAL_RANGE" in scd_event_des:
-            
+
             file_prefix = "RANGE_"
         else:
-            
             file_prefix = "EVENT_"
 
         features = []
-        
+
         for item in items_list:
-            
             clean_properties = {}
             for k, v in item['properties'].items():
                 if pd.isna(v):
@@ -1047,7 +927,6 @@ def export_secondary_disasters_to_geojson(results: dict, geos_output_folder_in):
                 else:
                     clean_properties[k] = v
 
-            
             feature = {
                 "type": "Feature",
                 "geometry": item['geometry'].__geo_interface__,
@@ -1062,16 +941,12 @@ def export_secondary_disasters_to_geojson(results: dict, geos_output_folder_in):
             }
             features.append(feature)
 
-        
         feature_collection = {
             "type": "FeatureCollection",
             "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
             "features": features
         }
 
-        
-
-        
         safe_event_name = scd_event_des.replace(',', '_').replace(' ', '_')
         file_name = f"{file_prefix}{safe_event_name}.geojson"
         file_path = os.path.join(geos_output_folder_in, file_name)
@@ -1152,8 +1027,6 @@ def build_event_node(current_event, current_features, current_extent=None, regio
         "affect_extent": current_extent,
         "observation_tasks": observation_tasks,
         "children": [],
-        
-        
         "confidence": 0.0,
         "base_confidence": None,
         "causal_relation_type": None,
@@ -1163,9 +1036,6 @@ def build_event_node(current_event, current_features, current_extent=None, regio
 
     output_folder_new = f"{output_folder}/{event_desc}"
 
-    
-    
-    
     secondary_candidates = get_matrix_secondary_candidates(
         current_event,
         min_effective_confidence=min_secondary_confidence,
@@ -1178,14 +1048,9 @@ def build_event_node(current_event, current_features, current_extent=None, regio
         secondary_candidates=secondary_candidates,
     )
 
-    
-    
-
     if depth >= max_depth:
         return node
 
-    
-    
     seen_in_this_level = set()
 
     for candidate in secondary_candidates:
@@ -1205,7 +1070,6 @@ def build_event_node(current_event, current_features, current_extent=None, regio
         if extent and len(extent) > 0:
             geo_extent = extent[0]["geometry"]
 
-        
         child_node = build_event_node(
             scd_event,
             current_features=extent_results.get(scd_desc, []),
@@ -1239,10 +1103,6 @@ def save_tree_to_neo4j(node, ori_event_desc, parent_node, parent_node_path: list
     causal_relation_code = node.get("causal_relation_code")
     confidence_multiplier = float(node.get("confidence_multiplier", 1.0) or 1.0)
 
-    
-    
-    
-    
     current_probability = parent_prob * (confidence * CONFIDENCE_TO_PROBABILITY_SCALE)
 
     cur_node = DisasterEvent.nodes.first_or_none(ori_event_desc=ori_event_desc,
@@ -1257,7 +1117,6 @@ def save_tree_to_neo4j(node, ori_event_desc, parent_node, parent_node_path: list
                                  depth=depth,
                                  probability=current_probability).save()  
     else:
-        
         cur_node.probability = current_probability
         cur_node.save()
 
@@ -1291,7 +1150,6 @@ def save_tree_to_neo4j(node, ori_event_desc, parent_node, parent_node_path: list
                 "evidence": relationship_metadata,
             })
 
-    
     new_path = parent_node_path + [event_desc]
     for child in node.get("children", []):
         save_tree_to_neo4j(child, ori_event_desc, cur_node, new_path, event_num, current_probability)
@@ -1304,7 +1162,6 @@ def construct_observation(disaster_node, node: dict):
             obs_desc = task["obs_event_desc"]
             is_general = task["is_general"]
 
-            
             if not is_general:
                 obs_node = ObservationEvent.nodes.first_or_none(event_description=obs_desc,
                                                                 disaster_id=disaster_node.node_id)
@@ -1316,11 +1173,9 @@ def construct_observation(disaster_node, node: dict):
                 if not obs_node:
                     obs_node = ObservationEvent(event_description=obs_desc, disaster_id='000000', is_public=True).save()
 
-            
             if not disaster_node.trigger.is_connected(obs_node):
                 disaster_node.trigger.connect(obs_node)
 
-            
             for s_info in task.get("sensors", []):
                 s_node = Sensor.nodes.get_or_none(sensor_name=s_info["name"], platform=s_info["platform"])
                 if not s_node:
@@ -1329,7 +1184,6 @@ def construct_observation(disaster_node, node: dict):
                 if not obs_node.sensor_argument.is_connected(s_node):
                     obs_node.sensor_argument.connect(s_node)
 
-            
             for f_info in task.get("factors", []):
                 f_node = Factor.nodes.get_or_none(factor_name=f_info["name"])
                 if not f_node:
@@ -1337,7 +1191,6 @@ def construct_observation(disaster_node, node: dict):
                 if not obs_node.factor_argument.is_connected(f_node):
                     obs_node.factor_argument.connect(f_node)
 
-            
             for p_info in task.get("patterns", []):
                 p_node = GeneralizedObservationPattern.nodes.get_or_none(
                     space_res=p_info["space_res"], time_res=p_info["time_res"])
@@ -1348,13 +1201,6 @@ def construct_observation(disaster_node, node: dict):
                 if not obs_node.gen_obsPat_argument.is_connected(p_node):
                     obs_node.gen_obsPat_argument.connect(p_node)
 
-            
-            
-            
-            
-            
-            
-            
             for g_node in disaster_node.geo_argument.all():
                 if not obs_node.geo_argument.is_connected(g_node):
                     obs_node.geo_argument.connect(g_node)
@@ -1437,7 +1283,6 @@ def construct_disaster_arguments(disaster_node, node: dict):
         disaster_node.geo_argument.connect(gd_geo_node)
         print(f"create [disaster geo]: ({disaster_node.event_description}) - ({gd_geo_type})")
 
-    
     gd_geometries = gd_geo_node.has_geometry.all()
     if len(gd_geometries) == 0:
         gd_geometry_node = Geometry(geometry=str(node['affect_extent'])).save()
@@ -1446,32 +1291,26 @@ def construct_disaster_arguments(disaster_node, node: dict):
     node_features = node.get('affect_features', [])
 
     if node_features:
-        
         disaster_id_str = str(disaster_node.node_id)
 
-        
         osm_ids = [f['properties']['osm_id'] for f in node_features]
 
-        
         existing_features = OSMFeature.nodes.filter(osm_id__in=osm_ids)
         feature_map = {f.osm_id: f for f in existing_features}
 
         existing_geoms = Geometry.nodes.filter(osm_id__in=osm_ids)
         geom_map = {g.osm_id: g for g in existing_geoms}
 
-        
         with db.transaction:
             for feature in node_features:
                 feature_osm_id = feature['properties']['osm_id']
 
-                
                 feature_node = feature_map.get(feature_osm_id)
                 if not feature_node:
                     feature_node = OSMFeature(osm_id=feature_osm_id,
                                               properties=feature['properties']).save()
                     feature_map[feature_osm_id] = feature_node
 
-                
                 feature_prop_dict = feature_node.properties or {}
                 if disaster_id_str not in feature_prop_dict:
                     feature_prop_dict[disaster_id_str] = {
@@ -1482,17 +1321,13 @@ def construct_disaster_arguments(disaster_node, node: dict):
                     feature_node.properties = feature_prop_dict
                     feature_node.save()  
 
-                
                 if feature_osm_id not in geom_map:
                     geometry_node = Geometry(osm_id=feature_osm_id,
                                              geometry=str(feature['geometry'])).save()
                     geom_map[feature_osm_id] = geometry_node
 
-        
-        
         rel_data = [{'osm_id': f['properties']['osm_id']} for f in node_features]
 
-        
         cypher_query = """
                 UNWIND $rel_data AS row
                 MATCH (geo:GeoObject {geo_object_name: $geo_name, event_id: $event_id})
@@ -1502,14 +1337,12 @@ def construct_disaster_arguments(disaster_node, node: dict):
                 MERGE (feat)-[:HAS_GEOMETRY]->(geom)
                 """
 
-        
         db.cypher_query(cypher_query, {
             'rel_data': rel_data,
             'geo_name': gd_geo_type,
             'event_id': disaster_node.node_id
         })
         print(f"Batch created [geo feature] and [feature geometry] relationships for {len(node_features)} features.")
-        
 
     gd_impact_node = Impact.nodes.first_or_none(impact_name=gd_impact_type, impact_type=gd_impact_type)
     if not gd_impact_node:
@@ -1538,7 +1371,6 @@ def construct_ori_disaster_arguments(disaster_node, node: dict):
         disaster_node.geo_argument.connect(gd_geo_node)
         print(f"create [disaster geo]: ({disaster_node.event_description}) - ({gd_geo_type})")
 
-    
     gd_geometries = gd_geo_node.has_geometry.all()
     if len(gd_geometries) == 0:
         gd_geometry_node = Geometry(geometry=str(node['affect_extent'])).save()
@@ -1546,17 +1378,8 @@ def construct_ori_disaster_arguments(disaster_node, node: dict):
     else:
         gd_geometry_node = gd_geometries[0]
 
-    
-    
-    
-    
     feature_osm_id = f"{gd_geo_type}_{disaster_node.node_id}"
-    
-    
-    
-    
-    
-    
+
     feature_node = OSMFeature.nodes.first_or_none(osm_id=feature_osm_id)
     if not feature_node:
         feature_node = OSMFeature(osm_id=feature_osm_id).save()
@@ -1599,7 +1422,6 @@ def construct_instantiation_database(ori_events: list,
 
     event_trees = []
     for idx, ori_event in enumerate(ori_events):
-        
         tree = build_event_node(ori_event,
                                 current_features=ori_features,
                                 current_extent=ori_extents[idx],
@@ -1610,13 +1432,11 @@ def construct_instantiation_database(ori_events: list,
             event_trees.append(tree)
 
     end_time = time.time()
-    
+
     execution_duration_seconds = round(end_time - start_time, 2)
 
-    
     completion_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    
     output_data = {
         "status": "success",
         "completion_time": completion_time,
@@ -1625,8 +1445,8 @@ def construct_instantiation_database(ori_events: list,
         "event_trees_generated": len(event_trees)
     }
 
-    
-    output_filename = "data/execution_report.json"
+    output_filename = "data/logs/instantiation_execution.json"
+    os.makedirs(os.path.dirname(output_filename), exist_ok=True)
     with open(output_filename, "w", encoding="utf-8") as f:
         json.dump(output_data, f, ensure_ascii=False, indent=4)
 
@@ -1652,10 +1472,10 @@ def construct_instantiation_database(ori_events: list,
             if not ori_node:
                 ori_node = DisasterEvent(event_description=event_tree["event_description"], depth=0,
                                          is_happen=True, event_num=event_num).save()
-            
+
             construct_ori_disaster_arguments(ori_node, event_tree)
             construct_observation(ori_node, event_tree)
-            
+
             parent_node_path = [event_tree["event_description"]]
             for child in event_tree.get("children", []):
                 save_tree_to_neo4j(child, event_tree["event_description"], ori_node, parent_node_path, event_num)
@@ -1822,7 +1642,6 @@ def get_standard_factor_to_disaster():
                 factor_node = factor_nodes[0]
                 standard_factor_nodes = factor_node.relate.all()
                 for sf_node in standard_factor_nodes:
-
                     sf_relate_geos = sf_node.relate_geos
                     if len(sf_relate_geos) > 0 and geo_type not in sf_relate_geos:
                         continue
@@ -1856,4 +1675,3 @@ def get_factor_to_disaster():
                 factor_to_disaster[sf_name] = sf_to_disaster
 
     return factor_to_disaster
-

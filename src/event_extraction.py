@@ -12,7 +12,6 @@ alongside disaster-causal and observation-triggering relationship identification
 
 llm = ChatOpenAI(**get_chat_model_options('event'))
 
-
 geo_types = [
     '河流', '湖泊', '流域', '河、湖岛',
     '河滩', '泉', '瀑布', '山体', '山洞', '漏斗', '沟壑', '山谷', '海域', '海岸', '海岛', '田地', '林地', '草地',
@@ -85,7 +84,6 @@ platform_types_en = [
     'Ground-based Fixed Platform',
     'Ground-based Mobile Platform'
 ]
-
 
 
 def event_extraction_combined(text: str):
@@ -913,7 +911,6 @@ def disaster_event_exaction_en(text: str):
     return output.content
 
 
-
 def observation_event_exaction(text: str):
     """
     Extracts only observation events from the given text.
@@ -1235,7 +1232,6 @@ def observation_event_exaction_en(text: str):
         }
     )
     return output.content
-
 
 
 def parse_disaster_results(results_raw):
@@ -1616,7 +1612,6 @@ def _worker_cause_relation_en(text, events_in, events_dict_in):
         return []
 
 
-
 def _worker_trigger_relation(text, disaster_events, obs_events, events_dict):
     """Call the LLM for trigger relations.
 
@@ -1741,7 +1736,6 @@ def _worker_trigger_relation_en(text, disaster_events, obs_events, events_dict):
         return batch_results
     except Exception:
         return []
-
 
 
 def update_DO_argument_relations(disaster_node: DisasterEvent, observation_node: ObservationEvent):

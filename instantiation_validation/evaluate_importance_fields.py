@@ -12,6 +12,7 @@ reported, so a fractional tie hit is never represented as an observed integer.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import csv
 import hashlib
 import html
@@ -37,6 +38,37 @@ class Curve:
     point_count: np.ndarray
     auc: float
     n_points: int
+
+
+def canonical_point_set(name):
+    """Resolve historical point-set identifiers to the canonical Subsidence name."""
+    text = str(name).strip()
+    return 'Subsidence' if text.casefold() in ('collapse', 'subsidence') else text
+
+
+def normalize_point_set_config(config):
+    """Use canonical point-set names consistently in selections and event references."""
+    normalized = deepcopy(config)
+    for key in ('point_sets', 'factor_fields_by_point_set'):
+        if key not in normalized:
+            continue
+        values = {}
+        for name, value in normalized[key].items():
+            canonical = canonical_point_set(name)
+            if canonical in values:
+                raise ValueError(f'Duplicate point-set aliases for {canonical}.')
+            values[canonical] = value
+        normalized[key] = values
+    for pair in normalized.get('event_pairs', []):
+        pair['points'] = canonical_point_set(pair['points'])
+    return normalized
+
+
+def field_point_label(field, point_set, separator=' | '):
+    """Label a field and validation set without repeating an identical hazard name."""
+    point_set = canonical_point_set(point_set)
+    key = lambda value: ''.join(character for character in value if character.isalnum()).casefold()
+    return field if key(field) == key(point_set) else f'{field}{separator}{point_set}'
 
 
 def build_curve(scores, areas, point_scores) -> Curve:
@@ -308,7 +340,7 @@ def render_report(rows, config, out, warnings):
         if r['constant_field']:
             name += ' <strong>（常数场，无空间区分能力）</strong>'
         table_rows.append(f'<tr><td><a href="{r["result_dir"]}/curve.png">{name}</a></td>'
-                          f'<td>{html.escape(r["point_set"])}</td><td>{r["used_points"]}</td>'
+                          f'<td>{html.escape(canonical_point_set(r["point_set"]))}</td><td>{r["used_points"]}</td>'
                           f'<td>{r["AUC_PA"]:.4f}</td><td>{r["HR_at_10pct"]:.2%}</td>'
                           f'<td>{r["Lift_at_10pct"]:.3f}</td><td>{r["Area_at_80pct_hit"]:.2%}</td>'
                           f'<td>{r["outside_points"]+r["nodata_points"]+r["transform_failed_points"]}</td></tr>')
@@ -335,6 +367,7 @@ def run(config_path: Path, overwrite=False, config_overrides=None):
     config = json.loads(config_path.read_text(encoding='utf-8-sig'))
     if config_overrides:
         config.update(config_overrides)
+    config = normalize_point_set_config(config)
     base = config_path.parent
     resolve = lambda p:(base/Path(p)).resolve()
     fractions = sorted(set([.1]+list(config.get('area_fractions',[.1]))))
@@ -407,7 +440,7 @@ def run(config_path: Path, overwrite=False, config_overrides=None):
         write_csv(folder/'area_budgets.csv',[budget_metrics(curve,float(a)) for a in fractions])
         write_csv(folder/'point_audit.csv',audit)
         write_csv(folder/'score_thresholds.csv',[threshold_metrics(curve,float(t)) for t in config.get('score_thresholds',[])])
-        plot_curve(curve,summary,f'{field} | {point_name}',folder/'curve')
+        plot_curve(curve,summary,field_point_label(field,point_name),folder/'curve')
         details.append(summary)
         print(f'[{i}/{len(jobs)}] {kind} / {field} / {point_name}: N={curve.n_points}, AUC={curve.auc:.4f}, HR10={hr10["HR"]:.3f}',flush=True)
     warnings = list(selection_warnings)

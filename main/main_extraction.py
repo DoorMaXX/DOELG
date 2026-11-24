@@ -60,8 +60,7 @@ from fusion import (
     relation_deduplication
 )
 from other.environment_descrption import get_event_envDes_llm
-from other.observation_pattern import get_event_obsPat_llm
-
+from other.observation_pattern import get_event_obsPat_llm, get_vector_store
 
 # ==========================================
 # 1. DATABASE INGESTION LOGIC (Events)
@@ -275,7 +274,6 @@ def parse_tasks_from_json(file_path):
                         if isinstance(text, str) and text.strip():
                             tasks.append({'text': text.strip(), 'title': title, 'index': index})
                             index += 1
-
             elif isinstance(data, dict):
                 for title_key, chunks in data.items():
                     title = f"{default_title}_{title_key}"
@@ -287,7 +285,6 @@ def parse_tasks_from_json(file_path):
                         if isinstance(text, str) and text.strip():
                             tasks.append({'text': text.strip(), 'title': title, 'index': index})
                             index += 1
-
         except json.JSONDecodeError:
             lines = content.split('\n')
             for line in lines:
@@ -304,7 +301,6 @@ def parse_tasks_from_json(file_path):
                         index += 1
                 except json.JSONDecodeError:
                     pass
-
     except Exception as e:
         print(f"Error reading file {file_path}: {e}")
 
@@ -774,6 +770,12 @@ def run_obs_pattern(max_workers):
                 return True
 
         print(f"Found {len(tasks)} observation events requiring patterns. Processing...")
+        try:
+                print('Initializing the sensor manual index before starting observation workers...')
+                get_vector_store()
+        except Exception as error:
+                print(f'Observation pattern extraction stopped: sensor manual initialization failed: {error}')
+                return False
         llm_results = []
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -790,6 +792,8 @@ def run_obs_pattern(max_workers):
                                 llm_results.append(res)
 
         print(f"Inference complete. Synchronizing {len(llm_results)} records back to Neo4j...")
+        saved = 0
+        failed = len(tasks) - len(llm_results)
         for res in llm_results:
                 try:
                         obs_node = ObservationEvent.nodes.get(node_id=res['obs_id'])
@@ -820,10 +824,15 @@ def run_obs_pattern(max_workers):
 
                         if not obs_node.obsPat_argument.is_connected(obsPat_node):
                                 obs_node.obsPat_argument.connect(obsPat_node)
-
+                        saved += 1
                 except Exception as e:
+                        failed += 1
                         print(f"Database sync failed for observation pattern ID {res['obs_id']}: {e}")
 
+        print(f'Observation patterns: {saved}/{len(tasks)} tasks saved; {failed} failed.')
+        if failed:
+                print('Observation pattern extraction is incomplete. Rerun obs_pat to retry missing patterns.')
+                return False
         print(f"✅ Observation Pattern Extraction finished. Cost: {time.time() - start_time:.2f} seconds")
         return True
 
@@ -851,7 +860,10 @@ def run_spatial_computation(max_workers, neo_connector):
     event_pair_geo_encoding_parallel(geo_is_location, do_encoding=get_setting('geocoding.do_encoding'))
 
     print("\n-> Step 3/3: Calculating Semantic Spatial Relations (Distance, Topology, Basin)...")
-    main_calculate_spatial_relations(neo_connector)
+    summary = main_calculate_spatial_relations(neo_connector)
+    if isinstance(summary, dict) and summary.get('skipped_pairs', 0):
+        print('Spatial computation is incomplete. Rerun spatial to retry skipped geometry lookups.')
+        return False
 
     print(f"\n✅ Geographic Encoding and Spatial Relations completed in: {time.time() - start_time:.2f} seconds")
     return True
@@ -926,19 +938,16 @@ def main():
 
     if args.task == 'extract':
         run_extraction_pipeline(args.input_dir, args.workers)
-
     elif args.task == 'fuse':
         run_fusion()
-
     elif args.task == 'env':
         run_env_description(args.workers)
-
     elif args.task == 'obs_pat':
-        run_obs_pattern(args.workers)
-
+        if not run_obs_pattern(args.workers):
+            sys.exit(1)
     elif args.task == 'spatial':
-        run_spatial_computation(args.workers, neo_connector)
-
+        if not run_spatial_computation(args.workers, neo_connector):
+            sys.exit(1)
     elif args.task == 'all':
         print("\n🚀 [Pipeline Mode] Initiating End-to-End Graph Generation Pipeline...")
 
@@ -947,8 +956,10 @@ def main():
 
         run_fusion()
         run_env_description(args.workers)
-        run_obs_pattern(args.workers)
-        run_spatial_computation(args.workers, neo_connector)
+        if not run_obs_pattern(args.workers):
+            sys.exit(1)
+        if not run_spatial_computation(args.workers, neo_connector):
+            sys.exit(1)
 
         print(
             f"\n🎉 [Pipeline Mode] Production run completed successfully! Total elapsed time: {time.time() - overall_start:.2f} seconds")

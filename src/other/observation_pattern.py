@@ -7,23 +7,71 @@ from langchain_community.vectorstores import FAISS
 from langchain.tools import tool
 import pandas as pd
 from langchain_core.documents import Document
+import hashlib
+import json
 import pickle
+from pathlib import Path
+from threading import Lock
 from src.construct_config import get_configured_path, get_setting
+from other.sensor_embeddings import SensorEmbeddings
 
-
-
-embeddings = OllamaEmbeddings(
-    model=get_setting('embeddings.sensor.model'),
-    base_url=get_setting('embeddings.sensor.base_url')
+sensor_embedding_settings = get_setting('embeddings.sensor')
+embeddings = SensorEmbeddings(
+    OllamaEmbeddings(
+        model=sensor_embedding_settings['model'],
+        base_url=sensor_embedding_settings.get('base_url'),
+        client_kwargs={'timeout': sensor_embedding_settings.get('timeout_seconds', 60)},
+    ),
+    batch_size=sensor_embedding_settings.get('batch_size', 16),
+    max_attempts=sensor_embedding_settings.get('max_attempts', 3),
+    retry_delay_seconds=sensor_embedding_settings.get('retry_delay_seconds', 2.0),
 )
 vector_db = None
 retriever = None
+_VECTOR_STORE_LOCK = Lock()
+
+
+def _file_sha256(path):
+    """Hash a workbook or index file to detect changed or incomplete cache contents."""
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_cached_sensor_index(index_dir, metadata):
+    """Load a locally generated index only when its workbook, model, and file hashes match."""
+    manifest_path = index_dir / 'sensor_index_manifest.json'
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        if manifest['metadata'] != metadata:
+            return None
+        for name in ('index.faiss', 'index.pkl'):
+            if _file_sha256(index_dir / name) != manifest['files'][name]:
+                return None
+        store = FAISS.load_local(str(index_dir), embeddings, allow_dangerous_deserialization=True)
+        print('[Sensor manual] Loaded the verified local vector index.', flush=True)
+        return store
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, EOFError, pickle.UnpicklingError) as error:
+        print(f'[Sensor manual] Cached index could not be loaded; rebuilding: {error}', flush=True)
+        return None
 
 def build_vector_store(csv_path: str):
-    """
-    Reads sensor data from a CSV file, constructs descriptive text documents
-    for each sensor, and builds a local FAISS vector store for retrieval.
-    """
+    """Load a verified sensor index or rebuild it from the supplied Excel workbook."""
+    index_dir = Path(get_configured_path('sensor_manual.index_dir'))
+    metadata = {
+        'schema_version': 1,
+        'workbook_path': str(Path(csv_path).resolve()),
+        'workbook_sha256': _file_sha256(csv_path),
+        'embedding_model': sensor_embedding_settings['model'],
+        'embedding_base_url': sensor_embedding_settings.get('base_url'),
+    }
+    cached = _load_cached_sensor_index(index_dir, metadata)
+    if cached is not None:
+        return cached
     df = pd.read_excel(csv_path)
 
     documents = []
@@ -40,18 +88,29 @@ def build_vector_store(csv_path: str):
         doc = Document(page_content=content, metadata={"source": csv_path, "id": row['instrument_name']})
         documents.append(doc)
 
+    print(f'[Sensor manual] Building the vector index for {len(documents)} records.', flush=True)
     vector_store = FAISS.from_documents(documents, embeddings)
 
-    vector_store.save_local(get_configured_path('sensor_manual.index_dir'))
+    vector_store.save_local(str(index_dir))
+    manifest = {
+        'metadata': metadata,
+        'files': {name: _file_sha256(index_dir / name) for name in ('index.faiss', 'index.pkl')},
+    }
+    manifest_path = index_dir / 'sensor_index_manifest.json'
+    temporary = manifest_path.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+    temporary.replace(manifest_path)
     return vector_store
 
 
 def get_vector_store():
-    """Build the sensor manual vector store and retriever lazily from the active configuration."""
+    """Initialize and publish the sensor index and retriever once across worker threads."""
     global vector_db, retriever
-    if vector_db is None:
-        vector_db = build_vector_store(get_configured_path('sensor_manual.input_file'))
-        retriever = vector_db.as_retriever(search_kwargs={"k": get_setting('sensor_manual.retrieval_k')})
+    with _VECTOR_STORE_LOCK:
+        if vector_db is None or retriever is None:
+            store = build_vector_store(get_configured_path('sensor_manual.input_file'))
+            store_retriever = store.as_retriever(search_kwargs={"k": get_setting('sensor_manual.retrieval_k')})
+            vector_db, retriever = store, store_retriever
     return vector_db
 
 @tool
@@ -159,7 +218,6 @@ def get_event_obsPat_llm_en(text, obs_event_des, disaster_event_des):
         config={"recursion_limit": get_setting('sensor_manual.recursion_limit')}
     )
     return output["structured_response"]
-
 
 
 def get_save_event_obsPat(obs_event_node, disaster_event_node):
@@ -270,7 +328,6 @@ def factor_identify_en(factor: str):
         {"messages": [{"role": "user", "content": f"factor=‘{factor}’"}]}
     )
     return output["structured_response"]
-
 
 
 def do_factor_delete():

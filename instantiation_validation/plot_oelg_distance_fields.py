@@ -17,7 +17,6 @@ import distance_fields as fields
 from standard_observation_factors import canonical_factors
 from oelg_graph_store import load_graph
 
-
 SCORE_FORMULA = '100 * depth_decay ** (depth - 1) for eligible depth >= 1; no temporal or path-count weighting'
 
 

@@ -36,7 +36,6 @@ from shapely.ops import transform, unary_union
 
 from standard_observation_factors import factor_key
 
-
 # Keep the OF numbering used by instantiation.py and the manuscript figure.
 OBSERVATION_FACTOR_LABELS = {
     factor_key(name):f'OF{number}'
@@ -491,8 +490,20 @@ def aggregate_graph_feature(row, path_boost, exclude_types):
 
 
 def open_driver(config):
+    """Open a driver using shared project credentials or a legacy connector's literal URL."""
     from neo4j import GraphDatabase
-    url = os.environ.get('NEO4J_DATABASE_URL') or literal_setting(config['connection_module'],'DATABASE_URL','Neo4jDatabaseConnector')
+    url = os.environ.get('NEO4J_DATABASE_URL')
+    if not url:
+        connection_module = Path(config['connection_module']).resolve()
+        project_connector = Path(__file__).resolve().parents[1] / 'ontology' / 'neo4jmodel.py'
+        if connection_module == project_connector:
+            try:
+                from src.construct_config import get_neo4j_url
+            except ModuleNotFoundError:
+                from construct_config import get_neo4j_url
+            url = get_neo4j_url()
+        else:
+            url = literal_setting(connection_module,'DATABASE_URL','Neo4jDatabaseConnector')
     parsed = urllib.parse.urlsplit(url)
     username = os.environ.get('NEO4J_USERNAME') or urllib.parse.unquote(parsed.username or '')
     password = os.environ.get('NEO4J_PASSWORD') or urllib.parse.unquote(parsed.password or '')

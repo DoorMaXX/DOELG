@@ -12,8 +12,8 @@
     }
   ],
   "point_sets": {
-    "collapse": {
-      "path": "../data/validation_points/collapse/collapse_points.shp",
+    "Subsidence": {
+      "path": "../data/validation_points/Subsidence/Subsidence.shp",
       "exclude_status": []
     },
     "waterlogging": {
@@ -24,7 +24,7 @@
   "event_pairs": [
     {
       "file": "Subsidence_importance.tif",
-      "points": "collapse"
+      "points": "Subsidence"
     },
     {
       "file": "Waterlogging_importance.tif",
@@ -33,7 +33,7 @@
   ],
   "factor_glob": "*_importance_field.tif",
   "factor_fields_by_point_set": {
-    "collapse": [
+    "Subsidence": [
       "Subsidence Depth",
       "Crack Width",
       "Tilt Angle",

@@ -77,7 +77,6 @@ def merge_nodes(alias_node: StructuredNode, canonical_node: StructuredNode, node
 
         results_out, _ = neo4j_db.cypher_query(cypher_outgoing, params)
         refactored_out_count = results_out[0][0] if results_out and results_out[0] else 0
-
     except Exception as e:
         print(f"Relationship redirection failed. Ensure the APOC library is installed: {e}")
         return
@@ -197,7 +196,6 @@ def geo_is_cluster_ok_en(cluster: list):
     return output["structured_response"]
 
 
-
 def impact_is_cluster_ok(cluster: list):
     """
     Uses an LLM agent to validate if a cluster of disaster phenomena represents
@@ -252,7 +250,6 @@ def impact_is_cluster_ok_en(cluster: list):
     return output["structured_response"]
 
 
-
 def sensor_is_cluster_ok(cluster: list):
     """
     Uses an LLM agent to assess a cluster of sensor names, ensuring they refer
@@ -301,7 +298,6 @@ def sensor_is_cluster_ok_en(cluster: list):
     return output["structured_response"]
 
 
-
 def factor_is_cluster_ok(cluster: list):
     """
     Uses an LLM agent to verify if a list of observable factor names refers
@@ -346,7 +342,6 @@ def factor_is_cluster_ok_en(cluster: list):
     agent = create_agent(llm, system_prompt=sys_prompt, response_format=ClusterInfo)
     output = agent.invoke({"messages": [{"role": "user", "content": f"factors=‘{cluster}’"}]})
     return output["structured_response"]
-
 
 
 def generic_cluster_identify(

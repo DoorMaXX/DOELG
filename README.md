@@ -156,7 +156,7 @@ python main/main_validation.py -t patterns
 
 This workflow does not contact Neo4j, Ollama, geocoding services, or an LLM. It replays the archived experiment inputs; it does not rebuild the historical graphs. DOELG retains the original 394 factor-to-event associations from `events-ins-all-zhengzhou-1-sensor-en-0904`. OELG retains the original strict-environment snapshot and depth-only scores. Source versions and SHA-256 hashes are recorded in `data/paper_experiment/provenance.json`. Historical paths embedded in snapshot metadata identify their origin and are not runtime dependencies because the geometries are included.
 
-`patterns` verifies 1,440 event-pair groups containing 1,656 patterns in `data/disaster_pattern_stats_065_1111.json`. The original generalization script identifies the source database as `events-logic-all-1zz-sensor-en-0904`; a database dump is not included. The existing construction and live-map configuration files remain separate from the archived paper profile.
+`patterns` verifies 1,440 event-pair groups containing 1,656 patterns in `data/paper_experiment/pattern_statistics.json`. The original generalization script identifies the source database as `events-logic-all-1zz-sensor-en-0904`; a database dump is not included. The existing construction and live-map configuration files remain separate from the archived paper profile.
 
 ### Construction configuration
 
@@ -166,7 +166,7 @@ Explicit command-line arguments (`--database`, `--workers`, and extraction's `--
 
 | Section | Settings |
 | --- | --- |
-| `neo4j` | Connection URL and default database for direct connector use |
+| `neo4j` | Server URL, username, password, and default database for direct connector use |
 | `llm` | Event and geographic extraction models, API addresses, temperatures, and credentials |
 | `embeddings` | Ollama embedding models and optional server addresses |
 | `extraction` | Default database, input directory, and worker count |
@@ -178,7 +178,50 @@ Explicit command-line arguments (`--database`, `--workers`, and extraction's `--
 | `translation` | Project-local Chinese-to-English graph vocabulary (`dictionary_path`) |
 | `standalone` | Database names used by the supporting modules' standalone examples |
 
+Configure the Neo4j server and credentials in the root `construct_config.json`:
+
+```json
+"neo4j": {
+  "url": "bolt://localhost:7687",
+  "username": "neo4j",
+  "password": "<your-password>",
+  "default_database": "case"
+}
+```
+
+`url` is the server's Bolt address; use the actual host and port shown by your running Neo4j instance. `--database` selects a database on that server and does not change the host or port. The shared connector in `ontology/neo4jmodel.py` reads these settings for extraction, generalization, and instantiation. Live mapping and OELG validation also use these credentials without importing the graph models. Existing configurations with credentials embedded in `url` remain supported; explicit `username` and `password` fields take precedence. Mapping and OELG's direct-driver workflows retain their existing `NEO4J_DATABASE_URL`, `NEO4J_URI`, `NEO4J_USERNAME`, and `NEO4J_PASSWORD` environment overrides.
+
 In `llm.event` and `llm.geo`, `api_key_env` names an environment variable that overrides `api_key` when populated. The supplied configuration preserves the previous model and connection settings. For example, set `$env:DEEPSEEK_API_KEY` to supply model credentials through the environment.
+
+Sensor manual retrieval uses `embeddings.sensor.batch_size` (default 16), `max_attempts` (3 total attempts per batch), `retry_delay_seconds` (2 seconds, increasing by the failed attempt number), and `timeout_seconds` (60 per HTTP request). Document and query embeddings share a request lock. Only transport failures and unavailable internal Ollama tokenizer/runner errors are retried; ordinary invalid requests and missing models are reported immediately.
+
+The observation-pattern stage initializes the sensor index before submitting LLM workers. A verified index in `sensor_manual.index_dir` is reused when its workbook, model, and file hashes match; an old index without `sensor_index_manifest.json` is rebuilt once. Failed tasks are counted explicitly. The command exits with a failure status when any task remains incomplete; rerun `obs_pat` against the same database to process missing patterns. Existing model names, worker counts, and database selections are unchanged.
+
+Geocoding requests use `geocoding.http`: `connect_timeout_seconds` (5), `read_timeout_seconds` (30), `max_attempts` (3 total attempts), `retry_delay_seconds` (1, increasing by the failed attempt number), and `lookup_batch_size` (50 or fewer IDs). Temporary transport failures, HTTP 429, and server errors are retried. Search and lookup failures return empty lists; reverse failures return an empty string. Spatial computation skips unavailable or incomplete geometry without inventing spatial metrics and reports computed, skipped, and missing-coordinate pair counts. A skipped eligible pair makes the command report an incomplete run after the remaining semantic/type paths have been processed.
+
+Geometry insertion rejects empty or malformed OSM IDs and invalid coordinates. Existing empty-ID geometry links are ignored and can be geocoded again when `geocoding.do_encoding` is true; they are not deleted automatically. All existing geocoding endpoint addresses remain under `geocoding.search_url`, `lookup_url`, and `reverse_url`.
+
+### Geographic type auxiliary graph
+
+`geocoding.type_database` selects the spatial type-path database (default `geos-type-1`), and `geocoding.type_rules` points to `data/dictionary/geo_type_rules.json`. The catalog freezes Appendices A and B of `Appendix_A_to_D.docx`, including its SHA-256 and original table row numbers. It contains 78 distinct types and 126 relation rows, expanded into 401 unique directed `SPATIAL` relationships. Slash-separated endpoint groups are expanded; duplicate rules retain all source rows. Composite relation names are kept as printed. Appendix B row 85 prints a dash as its relation name; the stored name uses its explicit type, `Rely on`.
+
+Names use the existing project vocabulary: `Earth Bank`, `In-Building Parking`, and `Telecom Line` retain the project's capitalization, and Appendix B's `Road` resolves to `Highway`. Printed appendix labels remain in provenance fields. Eight Appendix A types have no Appendix B edges: Cave, Coastline, Earth Bank, Sewer Vent, Sinkhole, Storage Tank, Valley, and Water Tower. They remain isolated rather than receiving inferred relationships. Type-path queries use the same aliases and continue to traverse `SPATIAL` edges without imposing a direction.
+
+```powershell
+python main/main_geo_types.py -t preview
+python main/main_geo_types.py -t rebuild -db geos-type-1
+python main/main_geo_types.py -t validate -db geos-type-1
+```
+
+| Argument | Purpose | Default |
+| --- | --- | --- |
+| `-t, --task` | Required: `preview`, `rebuild`, or `validate` | None |
+| `--config` | Shared construction and connection configuration | Root `construct_config.json` |
+| `--rules` | Frozen Appendix A/B catalog | `geocoding.type_rules` |
+| `-db, --database` | Auxiliary type database | `geocoding.type_database` |
+| `--output-dir` | Backup and validation report directory | `data/geo_type_graph` |
+
+`preview` is offline. `rebuild` is restricted to `geos-type-1`: it saves and verifies a complete node/relationship JSON backup under `data/geo_type_graph`, replaces the graph in one transaction, validates it before committing, and writes a validation report. Other node labels or relationship types stop replacement. `validate` checks the live graph without writing to it. Connection credentials come from the shared construction configuration. Rebuilding this auxiliary graph does not rewrite existing `type_path` properties in extracted or generalized databases; rerun the spatial stage for the intended extraction database to refresh those paths.
 
 ```powershell
 python main/main_extraction.py -t extract --config construct_config.json
@@ -200,7 +243,7 @@ Retained edges store `relation_type`, `relation_name`, and `affectType` as `Imme
 When the extraction relation stage is rerun, existing extracted disaster `CAUSE` edges in the selected database are checked first: unsupported edges are removed and permitted edges are classified. The same check runs after fusion because merging can change event types or collapse distinct objects into one. Generalization also rejects unsupported type pairs and carries I/A properties onto `MergeDisasterEvent` and `GlobalDisasterEvent` edges. Instantiation uses the same rules and applies the paper's coefficient once: 1 for Immediate and 0.65 for Altering. Changing the extraction filter can change newly constructed graph statistics; archived paper reproduction continues to use its frozen snapshots.
 
 ```powershell
-python main/main_extraction.py -t extract -i ./data/extraction_source_dataset/originText-wiki-1 -db test-1 -w 20
+python main/main_extraction.py -t extract -i ./data/extraction_source_dataset/sample_corpus -db test-1 -w 20
 python main/main_extraction.py -t fuse -db test-1
 python main/main_extraction.py -t all -db test-1
 ```
@@ -295,3 +338,27 @@ python main/main_validation.py -t compare --config <comparison-config.json>
 | `--overwrite` | Allow comparison reports to be replaced for `compare` or `reproduce` | Off |
 
 OELG mapping also reads `instantiation_validation/oelg_distance_config.json` and its shared map configuration. Instantiation writes a new snapshot to the configured instance database. If the snapshot or output directory is occupied, a suffix is added; update the comparison configuration to point to the actual output. See `instantiation_validation/README.md` for details.
+
+The subsidence validation set is named `Subsidence` and uses `data/validation_points/Subsidence/Subsidence.shp` with matching `.shx`, `.dbf`, `.prj`, and `.cpg` files. Comparison tables, figures, and exported filenames use this name. Historical `collapse` point-set identifiers are accepted as aliases; they do not refer to the distinct `Structural Collapse` hazard. Renaming the layer does not change its points or evaluation values.
+
+### Data layout
+
+Directory names describe their role; runtime exports use descriptive filenames without trial suffixes such as `_1`, `_07`, or `_final`. Geographic feature filenames and validation workbooks retain their category names and few-shot labels because loaders use them as identifiers. Corpus document titles remain unchanged.
+
+| Directory | Contents |
+| --- | --- |
+| `data/dictionary` | Translation and causal/spatial rules, with the source appendix workbook |
+| `data/extraction_source_dataset/wiki_corpus` | Full Wikipedia and reference-text corpus |
+| `data/extraction_source_dataset/sample_corpus` | Default small extraction corpus, including `observation_samples.json` |
+| `data/extraction_validation_dataset` | Event, geographic, and relation evaluation inputs and current figures |
+| `data/generalization` | `standard_factor_observations.json`, `pattern_statistics.json`, and `disaster_observations.json` exported by live generalization |
+| `data/geo_dataset` | Zhengzhou feature geometry, initial events, and the two Henan basin layers used by the code |
+| `data/geo_type_graph` | Spatial type-graph backup and validation report |
+| `data/ins_figures/distance_fields` | Current main-method distance fields and their complete source snapshot |
+| `data/logs` | Instantiation log and `instantiation_execution.json` |
+| `data/paper_experiment` | Frozen paper inputs, including `pattern_statistics.json`, snapshots, references, and provenance |
+| `data/paper_reproduction` | Reconstructed maps, comparisons, and verification results |
+| `data/sensor_dataset` | Sensor reference workbook |
+| `data/validation_points` | Disaster validation point layers |
+
+`data/cleanup_manifest.json` records the removed redundant files, retained equivalents, and renamed paths. Unused DEMs, broad-area basin layers, and old evaluation materials were removed only after verifying identical originals in KGC_2. The current project does not load those external originals. Duplicate trial map exports and the temporary pre-rename comparison backup were also removed. Live generalization statistics are separate from the frozen paper statistics.

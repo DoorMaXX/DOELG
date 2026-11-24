@@ -215,6 +215,3 @@ def plot_combined_relation_comparison(shot_list, base_dir, output_dir=None):
     output_path = output_dir / "combined_relations_comparison.png"
     plt.savefig(output_path, dpi=300)
     plt.close()
-
-
-

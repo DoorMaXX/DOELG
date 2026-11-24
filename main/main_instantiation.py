@@ -5,11 +5,9 @@ import time
 from shapely.geometry import Polygon, shape
 import json
 
-
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
-
 
 import instantiation
 import mapping
@@ -23,7 +21,6 @@ def run_instantiation(workers, logic_db, target_db, events_path):
     print(f"{'=' * 50}")
     start_time = time.time()
 
-    
     instantiation.logic_graph_database = logic_db
     instantiation.ins_graph_database = target_db
     instantiation._EVENT_IMPACT_TYPE_CACHE.clear()
@@ -33,10 +30,8 @@ def run_instantiation(workers, logic_db, target_db, events_path):
     print(f"Initializing connection to logic database: {logic_db}...")
     instantiation.neo = Neo4jDatabaseConnector(logic_db)
 
-    
     instantiation.ALL_EVENTS_CACHE = {e.event_description: e for e in GlobalDisasterEvent.nodes.all()}
 
-    
     zhengzhou_coords = [
         [113.549609, 34.791410],
         [113.657406, 34.791410],
@@ -52,13 +47,10 @@ def run_instantiation(workers, logic_db, target_db, events_path):
     polygons = []
     event_nodes = []
 
-    
     for feature in geojson_data['features']:
-        
+
         geometry = feature['geometry']
 
-        
-        
         shapely_obj = shape(geometry)
 
         if shapely_obj.geom_type in ('Polygon', 'MultiPolygon'):
@@ -91,11 +83,10 @@ def run_mapping(target_db, config, snapshot=None, output_dir=None, no_plots=Fals
     print(f"{'=' * 50}")
     start_time = time.time()
 
-    
     mapping.ins_graph_database = target_db
 
     print("Executing Mapping calculations and plotting...")
-    
+
     mapping.run_distance_fields(config, target_db, snapshot, output_dir, no_plots)
 
     print(f"✅ Mapping Phase completed in: {time.time() - start_time:.2f} seconds")
@@ -156,10 +147,8 @@ def main():
 
     if args.task == 'instantiate':
         run_instantiation(args.workers, args.logic_database, args.ins_database, args.events)
-
     elif args.task == 'map':
         run_mapping(args.ins_database, args.map_config, args.snapshot, args.output_dir, args.no_plots)
-
     elif args.task == 'all':
         print("\n🚀 [Pipeline Mode] Initiating End-to-End Instantiation & Mapping Pipeline...")
         run_instantiation(args.workers, args.logic_database, args.ins_database, args.events)

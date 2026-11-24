@@ -222,5 +222,3 @@ def dataset_process_event_relation_main(file_path, only_raw=False):
     print(dataset[['raw_json', 'true_json']].head())
 
     dataset.to_excel(file_path, index=False)
-
-

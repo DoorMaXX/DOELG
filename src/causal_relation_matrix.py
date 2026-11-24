@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
-
 IMMEDIATE = 'I'
 ALTERING = 'A'
 RELATION_LABELS = {IMMEDIATE: 'Immediate', ALTERING: 'Altering'}

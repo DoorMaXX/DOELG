@@ -14,11 +14,12 @@ from pathlib import Path
 
 import numpy as np
 
-from evaluate_importance_fields import run, slug, write_csv
+from evaluate_importance_fields import (canonical_point_set, field_point_label,
+                                        normalize_point_set_config, run, slug, write_csv)
 
 METRICS = ('AUC_PA','HR_at_10pct','Lift_at_10pct','Area_at_80pct_hit')
 DEFAULT_FACTOR_SELECTION = {
-    'collapse':['Subsidence Depth','Crack Width','Surface Deformation','Tilt Angle','Structural Characteristics'],
+    'Subsidence':['Subsidence Depth','Crack Width','Surface Deformation','Tilt Angle','Structural Characteristics'],
     'waterlogging':['Water Body Area','Water Level','Precipitation','Soil Moisture'],
 }
 
@@ -29,6 +30,8 @@ def match_key(value):
 
 
 def selected_factor_fields(config):
+    """Return hazard-specific selections using canonical validation point-set names."""
+    config = normalize_point_set_config(config)
     selection = config.get('factor_fields_by_point_set',DEFAULT_FACTOR_SELECTION)
     if set(selection)!=set(config['point_sets']):
         raise ValueError('Specify factor_fields_by_point_set for every point set.')
@@ -36,7 +39,9 @@ def selected_factor_fields(config):
 
 
 def filter_results(results,config):
+    """Normalize legacy point-set identifiers and retain the selected factor fields."""
     selection = {name:{match_key(v) for v in values} for name,values in selected_factor_fields(config).items()}
+    results = [dict(row, point_set=canonical_point_set(row['point_set'])) for row in results]
     return [r for r in results if r['kind']!='factor' or match_key(r['field']) in selection[r['point_set']]]
 
 
@@ -47,7 +52,7 @@ def pair_results(results, reference, candidate):
     for row in results:
         if row['run'] not in indices:
             continue
-        key = (row['kind'],match_key(row['field']),row['point_set'])
+        key = (row['kind'],match_key(row['field']),canonical_point_set(row['point_set']))
         if key in indices[row['run']]:
             raise ValueError(f'Ambiguous normalized field name: {row["field"]}')
         indices[row['run']][key] = row
@@ -96,10 +101,10 @@ def plot_pair(row,out):
                 label=f'{row[side]} (AUC={row[f"{side}_AUC_PA"]:.3f})')
     ax.plot([0,100],[0,100],'--',color='#888888',lw=1,label='Random selection')
     ax.set(xlim=(0,100),ylim=(0,100),xlabel='Study area selected (%)',
-           ylabel='Observed points captured (%)',title=f'{row["field"]} | {row["point_set"]}')
+           ylabel='Observed points captured (%)',title=field_point_label(row['field'],row['point_set']))
     ax.grid(alpha=.2)
     ax.legend(loc='lower right')
-    target = out/'paired_curves'/f'{row["kind"]}_{slug(row["field"])}_{slug(row["point_set"])}'
+    target = out/'paired_curves'/f'{row["kind"]}_{slug(field_point_label(row["field"],row["point_set"],"_"))}'
     target.parent.mkdir(exist_ok=True)
     fig.savefig(target.with_suffix('.png'),dpi=180)
     fig.savefig(target.with_suffix('.pdf'))
@@ -134,6 +139,8 @@ def plot_paired_metrics(paired,point_set,out):
 
 
 def make_comparison(results,config,out):
+    """Write paired reports and figures using canonical hazard names."""
+    config = normalize_point_set_config(config)
     results = filter_results(results,config)
     reference = config['comparison']['reference']
     candidate = config['comparison']['candidate']
@@ -155,7 +162,7 @@ def make_comparison(results,config,out):
     content += '<p><a href="paired_comparison.csv">配对指标与差值 CSV</a> · <a href="report.html">全部场的详细评价报告</a> · <a href="summary.csv">全部指标 CSV</a></p>'
     content += '<input id="filter" placeholder="筛选事件、因子、点位或配对状态"><table><thead><tr><th>场 / 点位</th><th>状态</th><th>方法</th><th>AUC_PA</th><th>HR@10%</th><th>Lift@10%</th><th>Area@80%Hit</th></tr></thead><tbody>'
     for r in paired:
-        label = html.escape(f'{r["kind"]}: {r["field"]} / {r["point_set"]}')
+        label = html.escape(f'{r["kind"]}: {field_point_label(r["field"],r["point_set"]," / ")}')
         if r['curve_image']:
             label = f'<a href="{r["curve_image"]}">{label}</a>'
         for side in ('reference','candidate','delta'):
@@ -186,7 +193,7 @@ def main(argv=None):
     parser.add_argument('--overwrite',action='store_true')
     args = parser.parse_args(argv)
     config_path = args.config.resolve()
-    config = json.loads(config_path.read_text(encoding='utf-8-sig'))
+    config = normalize_point_set_config(json.loads(config_path.read_text(encoding='utf-8-sig')))
     names = {r['name'] for r in config['runs']}
     if not {config['comparison']['reference'],config['comparison']['candidate']} <= names:
         raise ValueError('Comparison names must be present in runs.')

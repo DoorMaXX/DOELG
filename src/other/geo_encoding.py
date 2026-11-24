@@ -1,10 +1,13 @@
 import requests
 import json
+import re
+import time
 from geopy.distance import great_circle
 from shapely.geometry import Polygon
 from pydantic import BaseModel, Field
 from langchain.tools import tool
 from shapely.geometry import shape
+from shapely.errors import ShapelyError
 from shapely.ops import unary_union, transform
 import pyproj
 import geopandas as gpd
@@ -37,76 +40,91 @@ def get_location(geo_name: str):
 
 
 def get_geo_encoding_local(query_feature: str):
-    """
-    Fetches geographic encoding information for a specific feature by calling
-    a local geocoding API.
-    """
-    url = get_setting('geocoding.search_url')
-    params = {
-        "q": query_feature
-    }
+    """Return search results as a list, including an empty list when the request fails."""
+    data = _request_geocoding_json(get_setting('geocoding.search_url'),
+                                   {'q': query_feature, 'format': 'json'})
+    if data is not None and not isinstance(data, list):
+        print('[Geocoding] Search returned an unexpected response type; no results accepted.')
+    return data if isinstance(data, list) else []
 
-    try:
-        response = requests.get(url, params=params)
 
-        if response.status_code == 200:
-            return json.loads(response.text)
-        else:
-            print(f"Request failed (status code: {response.status_code})")
-            return json.loads(response.text)
+def _request_geocoding_json(url, params):
+    """Request JSON with finite timeouts and retry only temporary HTTP or transport failures."""
+    settings = get_setting('geocoding').get('http', {})
+    timeout = (float(settings.get('connect_timeout_seconds', 5)),
+               float(settings.get('read_timeout_seconds', 30)))
+    attempts = int(settings.get('max_attempts', 3))
+    delay = float(settings.get('retry_delay_seconds', 1))
+    if min(timeout) <= 0 or attempts < 1 or delay < 0:
+        raise ValueError('Geocoding timeouts and max_attempts must be positive; retry delay must be nonnegative.')
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as error:
+            status = error.response.status_code if error.response is not None else None
+            transient = (isinstance(error, (requests.exceptions.Timeout, requests.exceptions.ConnectionError))
+                         or status == 429 or (status is not None and status >= 500))
+            if transient and attempt < attempts:
+                print(f'[Geocoding] Temporary request failure at {url}; '
+                      f'retrying {attempt + 1}/{attempts}: {error}')
+                time.sleep(delay * attempt)
+                continue
+            print(f'[Geocoding] Request failed at {url} after {attempt} attempt(s): {error}')
+            return None
+        try:
+            data = response.json()
+        except ValueError as error:
+            print(f'[Geocoding] Invalid JSON response from {url}: {error}')
+            return None
+        if isinstance(data, dict) and 'error' in data:
+            print(f"[Geocoding] API error from {url}: {data['error']}")
+            return None
+        return data
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error occurred: {e}")
+
+def normalize_osm_ids(value):
+    """Normalize typed OSM IDs and reject empty or malformed identifiers."""
+    if isinstance(value, str):
+        tokens = re.split(r'[,;\s-]+', value.strip())
+    elif isinstance(value, (list, tuple)):
+        tokens = [str(item).strip() for item in value]
+    else:
+        return ''
+    if not tokens or any(not re.fullmatch(r'[NWR][1-9][0-9]*', token, re.IGNORECASE) for token in tokens):
+        return ''
+    return ','.join(dict.fromkeys(token.upper() for token in tokens))
 
 
 def get_address_lookup_local(osm_id):
-    """
-    Looks up detailed address geometry and metadata for a given OSM ID
-    by communicating with a local API service.
-    """
+    """Look up typed OSM IDs in bounded batches and return a list even on failure."""
+    normalized = normalize_osm_ids(osm_id)
+    if not normalized:
+        print('[Geocoding] Lookup skipped: no valid typed OSM IDs were provided.')
+        return []
     url = get_setting('geocoding.lookup_url')
-    params = {
-        "osm_ids": osm_id,
-        "format": 'json',
-        "polygon_geojson": 1
-    }
-
-    try:
-        response = requests.get(url, params=params)
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"Request failed (status code: {response.status_code})")
-            return response.json()
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error occurred: {e}")
+    batch_size = int(get_setting('geocoding').get('http', {}).get('lookup_batch_size', 50))
+    if not 1 <= batch_size <= 50:
+        raise ValueError('Geocoding lookup_batch_size must be between 1 and 50.')
+    identifiers = normalized.split(',')
+    results = []
+    for start in range(0, len(identifiers), batch_size):
+        data = _request_geocoding_json(url, {
+            'osm_ids': ','.join(identifiers[start:start + batch_size]),
+            'format': 'json', 'polygon_geojson': 1,
+        })
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            print('[Geocoding] Lookup returned no usable result list; partial batches discarded.')
+            return []
+        results.extend(data)
+    return results
 
 
 def get_geo_reverse_local(lat: float, lon: float):
-    """
-    Performs a reverse geocoding lookup based on latitude and longitude
-    to retrieve spatial location information from a local API.
-    """
-    url = get_setting('geocoding.reverse_url')
-    params = {
-        "lat": lat,
-        "lon": lon,
-        "polygon_geojson": 1
-    }
-
-    try:
-        response = requests.get(url, params=params)
-
-        if response.status_code == 200:
-            return response.text
-        else:
-            print(f"Request failed (status code: {response.status_code})")
-            return response.text
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error occurred: {e}")
+    """Return reverse-geocoding JSON text, or an empty string when the request fails."""
+    data = _request_geocoding_json(get_setting('geocoding.reverse_url'),
+                                   {'lat': lat, 'lon': lon, 'format': 'json', 'polygon_geojson': 1})
+    return json.dumps(data, ensure_ascii=False) if isinstance(data, dict) else ''
 
 
 def get_bounding_box_polygon(data: dict) -> Polygon:
@@ -167,7 +185,6 @@ def calculate_spatial_relations(r1_data: dict, r2_data: dict):
             print("🔴 Topology: Disjoint")
 
         return [distance_km, [intersects, contains, touches]]
-
     except ValueError as e:
         print(f"\n❌ Topology calculation failed: {e}. Check the boundingbox data format.")
 
@@ -188,21 +205,40 @@ def get_metric_geometry(geom):
 
 
 def get_entity_combined_geometry(osm_ids_list):
-    """
-    Retrieves GeoJSON representations for a list of OSM IDs and merges them
-    into a single unified Shapely geometry object.
-    """
-    raw_data = get_address_lookup_local(osm_ids_list)
-
-    geoms = []
-    for item in raw_data:
-        if 'geojson' in item:
-            geoms.append(shape(item['geojson']))
-
-    if not geoms:
+    """Merge complete lookup geometries; reject failed, missing, or malformed components."""
+    identifiers = normalize_osm_ids(osm_ids_list)
+    if not identifiers:
+        print('[Geocoding] Geometry skipped: invalid OSM IDs.')
         return None
-    combined_geom = unary_union(geoms)
-    return combined_geom
+    raw_data = get_address_lookup_local(identifiers)
+    if not isinstance(raw_data, list) or not raw_data:
+        print(f'[Geocoding] No lookup geometries available for {identifiers}.')
+        return None
+    expected = set(identifiers.split(','))
+    geometries = {}
+    prefixes = {'node': 'N', 'way': 'W', 'relation': 'R'}
+    for item in raw_data:
+        if not isinstance(item, dict):
+            continue
+        identifier = prefixes.get(str(item.get('osm_type', '')).lower(), '') + str(item.get('osm_id', ''))
+        if identifier not in expected:
+            continue
+        try:
+            geometry = shape(item['geojson'])
+            if geometry.is_empty or not geometry.is_valid:
+                raise ValueError('Geometry is empty or invalid.')
+            geometries[identifier] = geometry
+        except (ShapelyError, ValueError, TypeError, KeyError, AttributeError) as error:
+            print(f'[Geocoding] Invalid geometry for {identifier}: {error}')
+    missing = expected - geometries.keys()
+    if missing:
+        print(f"[Geocoding] Incomplete geometry lookup; missing: {', '.join(sorted(missing))}.")
+        return None
+    try:
+        return unary_union(list(geometries.values()))
+    except ShapelyError as error:
+        print(f'[Geocoding] Geometry union failed for {identifiers}: {error}')
+        return None
 
 
 def get_downstream_path(start_id, adjacency_map, max_depth=None):
@@ -279,9 +315,12 @@ def analyze_spatial_relation(entity_a_ids, entity_b_ids):
     between two geographic entities based on their OSM IDs.
     """
     geom_a_wgs84 = get_entity_combined_geometry(entity_a_ids)
+    if geom_a_wgs84 is None:
+        print(f'[Spatial] Pair skipped because lookup geometry is unavailable: {entity_a_ids} -> {entity_b_ids}')
+        return {}
     geom_b_wgs84 = get_entity_combined_geometry(entity_b_ids)
-
-    if not geom_a_wgs84 or not geom_b_wgs84:
+    if geom_b_wgs84 is None:
+        print(f'[Spatial] Pair skipped because lookup geometry is unavailable: {entity_a_ids} -> {entity_b_ids}')
         return {}
 
     hybas_lv12 = gpd.read_file(get_configured_path('geocoding.basin_file'))

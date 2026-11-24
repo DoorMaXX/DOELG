@@ -272,7 +272,6 @@ def map_standard_factor_en(factor, standard_factors):
     return result
 
 
-
 def main_factor_map(neo, logic_graph_database):
     """
     Main function to map all factors in the database to standard factors and

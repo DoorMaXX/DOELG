@@ -16,7 +16,6 @@ FACTOR_RULE = 'Impact.impact_type <- ARGUMENT - GlobalDisasterEvent - TRIGGER ->
 DEFAULT_PHENOMENON_GEO_MAPPING = Path(__file__).parent / 'data' / 'dictionary' / 'phenomenon_geo_mapping.json'
 
 
-
 def identifier(*parts):
     return uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(parts, ensure_ascii=False)).hex
 
@@ -205,7 +204,6 @@ def load_graph(oelg, connection_config):
     connection_config.setdefault('connection_module', str(Path(__file__).resolve().parents[1] / 'ontology' / 'neo4jmodel.py'))
     with open_driver(connection_config) as driver:
         return read_graph(driver, oelg['instance_database'], oelg['snapshot'])
-
 
 
 def load_phenomenon_geo_mapping(path=DEFAULT_PHENOMENON_GEO_MAPPING):

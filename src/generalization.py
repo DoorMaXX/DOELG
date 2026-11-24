@@ -470,7 +470,6 @@ def update_global_DO_argument():
     """
     global_disaster_nodes = GlobalDisasterEvent.nodes.all()
     for global_disaster_node in global_disaster_nodes:
-
         d_geo_nodes = global_disaster_node.geo_argument.all()
         d_geo_node = None
         if d_geo_nodes:
@@ -641,7 +640,6 @@ def _link_factors_to_global(global_node, specific_desc, event='DisasterEvent'):
     db.cypher_query(query, {'g_id': global_node.element_id, 'd_desc': specific_desc})
 
 
-
 def _connect_global_cause_with_pattern(start_node, end_node, pattern):
     """
     Internal helper function to establish a 'CAUSE' relationship between two
@@ -697,7 +695,6 @@ def _append_cause_count_to_global_cause():
                         gr.save()
                 else:
                     print(f"Warning: Merge node not found for pattern {pattern}")
-
 
 
 def _link_to_original_event(merge_node, specific_desc, merge_type, origin_type):
@@ -894,7 +891,6 @@ def _connect_merge_event_spatial_relations(m_cause, m_result, pattern, sr):
         spatial_data = sr.dict()
 
     try:
-
         if m_cause and m_result:
             if m_cause.spatial_to.is_connected(m_result):
                 rel = m_cause.spatial_to.relationship(m_result)
@@ -1224,9 +1220,7 @@ def extract_standard_factor_observations(output_path=None):
     except Exception as e:
         print(f"❌ Failed to save JSON file: {e}")
 
-
     return factor_obs_dict
-
 
 
 def construct_public_gen_obs(factor, geo_type, factor_obs):
@@ -1546,7 +1540,6 @@ def generate_env_rule_to_database_parallel(elevation=None, max_workers=None):
     print("All tasks completed!")
 
 
-
 from pydantic import BaseModel, Field
 from typing import Literal
 
@@ -1615,7 +1608,6 @@ def fetch_llm_classification_en(sensor_id, sensor_name):
         return sensor_id, sensor_type, None  # Return ID, result, and no error
     except Exception as e:
         return sensor_id, None, str(e)  # Return the error message
-
 
 
 def sensor_reclassify_parallel(max_workers=None):
@@ -1727,7 +1719,6 @@ def extract_typical_key_paths(hops=None, top_n=None):
                         existing_conf, existing_freq = best_chains_dict[chain_tuple]
                         if (path_confidence, path_freq) > (existing_conf, existing_freq):
                             best_chains_dict[chain_tuple] = (path_confidence, path_freq)
-
         except Exception as e:
             print(f"Node {start_id} path extraction failed: {e}")
             continue
@@ -1984,4 +1975,3 @@ def export_disaster_observation_to_json(output_path=None):
         print(f"\nExport completed; data saved to: {output_path}")
     except Exception as e:
         print(f"\nFailed to save JSON file: {e}")
-
