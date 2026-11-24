@@ -1,0 +1,172 @@
+{
+  "neo4j": {
+    "url": "bolt://localhost:7687",
+    "username": "neo4j",
+    "password": "12345678",
+    "default_database": "test-1"
+  },
+  "llm": {
+    "event": {
+      "temperature": 0.3,
+      "model": "deepseek-chat",
+      "api_key": "sk-184a85d7723a49dfbb7b2019c2f77e46",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY"
+    },
+    "geo": {
+      "temperature": 1.0,
+      "model": "deepseek-chat",
+      "api_key": "sk-184a85d7723a49dfbb7b2019c2f77e46",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY"
+    }
+  },
+  "embeddings": {
+    "fusion": {
+      "model": "quentinz/bge-large-zh-v1.5:latest",
+      "base_url": "https://monetary-clara-forth-tampa.trycloudflare.com",
+      "empty_vector_dimensions": 4096
+    },
+    "sensor": {
+      "model": "bge-m3",
+      "base_url": "https://monetary-clara-forth-tampa.trycloudflare.com",
+      "batch_size": 16,
+      "max_attempts": 3,
+      "retry_delay_seconds": 2.0,
+      "timeout_seconds": 60
+    }
+  },
+  "extraction": {
+    "database": "test-1",
+    "workers": 20,
+    "input_dir": "data/extraction_source_dataset/sample_corpus"
+  },
+  "fusion": {
+    "dbscan": {
+      "eps": 0.15,
+      "min_samples": 2,
+      "metric": "precomputed"
+    },
+    "workers": 20,
+    "max_rounds": 2,
+    "deduplication_batch_size": 1000
+  },
+  "geocoding": {
+    "search_url": "https://susan-span-lucia-titles.trycloudflare.com/search",
+    "lookup_url": "https://susan-span-lucia-titles.trycloudflare.com/lookup",
+    "reverse_url": "https://susan-span-lucia-titles.trycloudflare.com/reverse",
+    "source_crs": "EPSG:4326",
+    "metric_crs": "EPSG:32649",
+    "basin_file": "data/geo_dataset/basin/henan_basin-1.shp",
+    "location_workers": 15,
+    "encoding_workers": 10,
+    "do_encoding": true,
+    "downstream_max_depth": 500,
+    "semantic_path_max_hops": 8,
+    "type_path_max_hops": 6,
+    "distance_precision": 2,
+    "http": {
+      "connect_timeout_seconds": 5,
+      "read_timeout_seconds": 30,
+      "max_attempts": 3,
+      "retry_delay_seconds": 1,
+      "lookup_batch_size": 50
+    },
+    "type_database": "geos-type-1",
+    "type_rules": "data/dictionary/geo_type_rules.json"
+  },
+  "sensor_manual": {
+    "input_file": "data/sensor_dataset/sensor_id.xlsx",
+    "index_dir": "sensor_faiss_index",
+    "retrieval_k": 3,
+    "recursion_limit": 30,
+    "factor_delete_evidence": "factor_delete_evidence.pickle"
+  },
+  "factor_mapping": {
+    "workers": 10,
+    "strict_workers": 20,
+    "minimum_score": 0.5
+  },
+  "generalization": {
+    "database": "events-logic-all",
+    "workers": 20,
+    "paths": {
+      "clusters": "all-cluster.pickle",
+      "standard_factor_observations": "data/generalization/standard_factor_observations.json",
+      "pattern_statistics": "data/generalization/pattern_statistics.json",
+      "observation_export": "data/generalization/disaster_observations.json"
+    },
+    "similarity": {
+      "threshold": 0.65,
+      "metric": "precomputed",
+      "linkage": "average",
+      "distance_scale_m": 10000,
+      "spatial_weights": {
+        "topology": 0.3,
+        "distance": 0.15,
+        "basin": 0.25,
+        "semantics": 0.3
+      },
+      "weights_with_spatial": {
+        "event": 0.2,
+        "environment": 0.5,
+        "spatial": 0.3
+      },
+      "weights_without_spatial": {
+        "event": 0.3,
+        "environment": 0.7
+      }
+    },
+    "causal_confidence": {
+      "laplace_smoothing": 1,
+      "lift_scale": 5.0,
+      "conditional_weight": 0.7,
+      "lift_weight": 0.3,
+      "path_enhancement": 0.15,
+      "maximum": 1.0,
+      "precision": 4
+    },
+    "environment": {
+      "elevation": 120,
+      "reference_elevation": 190,
+      "workers": 10
+    },
+    "spatial_workers": 1,
+    "sensor_workers": 10,
+    "observation_resolution": {
+      "spatial_thresholds_m": [
+        1,
+        10,
+        100
+      ],
+      "temporal_thresholds_hours": [
+        1,
+        24
+      ]
+    },
+    "statistics": {
+      "causal_top_n": 50,
+      "default_causal_top_n": 20,
+      "paths": {
+        "hops": 3,
+        "top_n": 100,
+        "default_hops": 4,
+        "default_top_n": 20,
+        "per_node_limit": 10000,
+        "minimum_confidence": 0.01,
+        "missing_confidence": 0.001
+      },
+      "influence_top_n": 10,
+      "hub_top_n": 10
+    }
+  },
+  "translation": {
+    "dictionary_path": "data/dictionary/dictionary.json"
+  },
+  "standalone": {
+    "geo_database": "events-all-1-mini",
+    "observation_database": "events-do-fusion-2",
+    "factor_database": "events-instantiation-beijing-2",
+    "environment_database": "events-logic-1"
+  }
+}

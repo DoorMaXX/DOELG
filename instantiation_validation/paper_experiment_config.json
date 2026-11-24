@@ -1,0 +1,25 @@
+{
+  "map_config": "paper_distance_config.json",
+  "provenance": "../data/paper_experiment/provenance.json",
+  "output_dir": "../data/paper_reproduction",
+  "methods": {
+    "DOELG": {
+      "snapshot": "../data/paper_experiment/doelg_snapshot.json",
+      "database": "events-ins-all-zhengzhou-1-sensor-en-0904"
+    },
+    "OELG": {
+      "snapshot": "../data/paper_experiment/oelg_snapshot.json",
+      "database": "oelg-ins-zhengzhou-0720-1"
+    }
+  },
+  "reference_field_metrics": "../data/paper_experiment/reference_field_metrics.csv",
+  "reference_table4": "../data/paper_experiment/reference_table4.csv",
+  "pattern_statistics": "../data/paper_experiment/pattern_statistics.json",
+  "pattern_source_database": "events-logic-all-1zz-sensor-en-0904",
+  "expected_pattern_groups": 1440,
+  "expected_patterns": 1656,
+  "expected_factor_associations": {
+    "DOELG": 394
+  },
+  "comparison_config": "importance_comparison_config.json"
+}
