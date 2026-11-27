@@ -5,25 +5,17 @@ DOELG constructs disaster–observation event logic from text, instantiates that
 - [Start the program](#start-the-program)
 - [Tasks and paper correspondence](#tasks-and-paper-correspondence)
 - [Execution order and dependencies](#execution-order-and-dependencies)
-- [Parameters and commands](#parameters-and-commands)
-- [Configuration and outputs](#configuration-and-outputs)
+- [Inputs before each task](#inputs-before-each-task)
 
 ## Start the program
 
 On Windows x64, extract `DOELG_windows.zip` and double-click `Start_DOELG.bat`. The first launch downloads Python 3.13 and installs the locked dependencies; subsequent launches reuse `.runtime`. Keep the project in a writable folder. Internet access is required for initial setup. Setup errors are recorded in `.runtime/setup.log`.
 
-Alternatively, from the project root with an existing environment:
-
-```powershell
-conda activate KGC
-python run.py
-```
-
 Before the menu, enter the Neo4j server URI, username, password and DeepSeek API Key. Press Enter to retain an existing value; password/Key input is hidden. Service settings are saved to `construct_config.json` and passed to all tasks in that menu session. Task-specific parameters apply only to that invocation. The launcher does not start Neo4j, Ollama, Nominatim or an LLM service.
 
 The shared configuration stores passwords and API keys encrypted. Keep `.doelg-credentials.key` beside it. Automatic defaults require this bundled key, so the protection hides JSON plaintext but cannot prevent a package recipient from extracting credentials.
 
-Use `Start_DOELG.bat --check` to prepare/check the environment without opening the menu. `python run.py --dry-run` previews task commands and does not save service settings or run tasks. Enter `0` to go back/exit; Ctrl+C cancels input or a running task. Blank optional task parameters use the selected script/configuration defaults. Required input paths must exist; preparation requires a new output workbook. Direct `main/` commands below do not show the startup configuration prompts.
+Use `Start_DOELG.bat --check` to prepare/check the environment without opening the menu. `python run.py --dry-run` previews task commands and does not save service settings or run tasks. Enter `0` to go back/exit; Ctrl+C cancels input or a running task. Blank optional task parameters use the selected script/configuration defaults. Required input paths must exist; preparation requires a new output workbook. The task input questions are listed below in the order shown by the launcher.
 
 ## Tasks and paper correspondence
 
@@ -96,207 +88,130 @@ Comparison reports AUCPA, HR@10%, concentration relative to random selection and
 
 Task 5.3 does not ask for an OELG snapshot name: when mapping is needed it discovers the latest complete supported result. It never instantiates an empty graph or substitutes archived paper results. Complete raster sets can be compared without Neo4j; known source-database/snapshot mismatches prevent reuse, and missing source metadata is reported as unverified. Reused rasters reflect their export time. After graph changes, select fresh raster roots and remove the relevant generated cache under `data/database_validation/maps` if needed.
 
+## Inputs before each task
+
+These are the questions shown in the command window after starting `Start_DOELG.bat`, in their actual order. Type values only; do not type Python commands or argument names. All paths below are relative to the project root unless absolute paths are entered.
+
+Press Enter at an optional question to use the displayed/configured default. For `y/n`, Enter means **No**. Worker counts must be positive integers; few-shot counts are space-separated positive integers. At a parameter question, `0` is a value, not Back. After the final answer, the task starts immediately.
+
+### Startup settings
+
+These four questions appear once, before the main menu:
+
+| Order / displayed question | What to enter | Enter without typing |
+| --- | --- | --- |
+| 1. `Neo4j server URI` | Server address, e.g. `bolt://localhost:7687`; this is not a database name | Keep the existing address |
+| 2. `Neo4j username` | Neo4j login username | Keep the existing username |
+| 3. `Neo4j password` | Neo4j login password; hidden input | Keep the existing password; required if missing |
+| 4. `DeepSeek API Key` | Key for the configured DeepSeek models; hidden input | Keep the existing Key; required if missing |
+
+These values are saved; the task inputs below are not saved to configuration files. Startup collects service settings even for archive tasks; archive processing itself uses local files.
+
+### Menus 1 and 2
+
+All tasks **1.1–1.6** and **2.1–2.5** ask the following first:
+
+| Order / displayed question | Meaning | Default |
+| --- | --- | --- |
+| 1. `Construction configuration` | JSON file containing connection, model, data and processing settings | `construct_config.json` |
+| 2. `Neo4j database` | History database to write/enrich, or existing history database to generalize | Selected file's `extraction.database` for menu 1; `generalization.database` for menu 2 |
+| 3. `Worker count` | Number of processing workers | Corresponding section's `workers` |
+
+Only **1.1 extract** and **1.6 all** then ask **4. `Input JSON directory`**: the folder of corpus JSON files, defaulting to `extraction.input_dir` (supplied `data/extraction_source_dataset/sample_corpus`). The other tasks have no additional input questions.
+
+### Menu 3
+
+Every task starts with **1. `Instantiation and mapping configuration`** (default `instantiation_config.json`), then **2. `Connection and model configuration`** (default `construct_config.json`). The following questions depend on the task:
+
+| Task | Remaining questions, in order |
+| --- | --- |
+| **3.1 instantiate** | `Source logic database` → `Initial event GeoJSON` → `Instance database` |
+| **3.2 map** | `Offline source snapshot (optional)` → `Instance database` **only if the snapshot was left blank** → `New map output directory` → `Skip map PNGs? y/n` |
+| **3.3 all** | `Source logic database` → `Initial event GeoJSON` → `Instance database` → `New map output directory` → `Skip map PNGs? y/n` |
+| **3.4 update** | `Existing instance database to copy` → `Source logic database` → `New initial events GeoJSON` → `New update instance database` → `New update output directory` → `Skip map PNGs? y/n` |
+
+| Question | Meaning / default when left blank |
+| --- | --- |
+| `Source logic database` | Abstract knowledge source; `instantiation.logic_database`, supplied `DOELG-abstract` |
+| `Initial event GeoJSON` | Initial disaster polygons; `instantiation.events_file`, falling back to `region` |
+| `Instance database` | Destination for instantiation, or existing graph for map-only; root `database` |
+| `Offline source snapshot (optional)` | Exported JSON snapshot to map without querying Neo4j; blank means read Neo4j |
+| `New map output directory` | Empty/absent map destination; blank uses root `output_dir` |
+| `Existing instance database to copy` | Baseline graph preserved by update; `update.source_database`, falling back to root `database` |
+| `New initial events GeoJSON` | Additional evidence for update; `update.events_file` |
+| `New update instance database` | Separate empty destination; `update.instance_database` |
+| `New update output directory` | Empty update-run directory; blank creates a new run below `update.output_dir` |
+| `Skip map PNGs? y/n` | Yes keeps GeoTIFFs but omits map PNGs; No generates both |
+
+Inference depth, scoring and grid settings are read from the selected JSON; the `.bat` menu does not ask for them individually.
+
+### Menu 4
+
+`Evaluation target` is a numbered selection: **1 event**, **2 geo**, **3 relation**. It is not shown for Table 4 export.
+
+| Task | Questions, in order |
+| --- | --- |
+| **4.1 evaluate** | `Evaluation target` → `Input workbook` |
+| **4.2 plot** | `Evaluation target` → `Workbook base directory` → `Few-shot sample counts` → `Plot output directory` |
+| **4.3 table** | `Workbook base directory` → `Few-shot sample counts` → `Output CSV file` |
+| **4.4 prepare** | `Evaluation target` → `Input workbook` → `New output workbook` → `Prepare predictions without ground truth? y/n` **for event/relation only** |
+
+| Question | Meaning / default when left blank |
+| --- | --- |
+| `Input workbook` | Existing `.xlsx` to evaluate/prepare; required, cannot be blank |
+| `New output workbook` | New `.xlsx` for prepared data; required and must not exist |
+| `Workbook base directory` | For plot: one target's directory, default `data/extraction_validation_dataset/<kind>` (`relation` uses `event_relation`). For table: parent containing all three target folders, default `data/extraction_validation_dataset` |
+| `Few-shot sample counts` | Workbook shot settings, e.g. `1 5 10 30`; this is not a worker count; default `1 5 10 30` |
+| `Plot output directory` | Figure destination; default `data/extraction_validation_dataset/results/<kind>` |
+| `Output CSV file` | Table 4 results file; default `<base-directory>/results/table4.csv` |
+| `Prepare predictions without ground truth? y/n` | Yes prepares prediction columns only; No also processes ground-truth content |
+
+### Menu 5
+
+For **5.4**, first choose `Validation data source`: **1 Local Neo4j databases**, **2 Existing archives**. Task **5.3** uses database comparison automatically; **5.5** uses archives automatically.
+
+| Task | Questions, in order |
+| --- | --- |
+| **5.1 instantiate** | `Validation configuration` → `OELG instance database` → `Output directory` → `Skip maps entirely? y/n` |
+| **5.2 map** | `Validation configuration` → `OELG instance database` → `Output directory` → `Skip map PNGs? y/n` |
+| **5.3 compare** | `Validation configuration` → `Connection configuration` → `DOELG instance database` → `OELG instance database` → `DOELG map root (reuse existing rasters)` → `OELG map root (reuse existing rasters)` → `New local evaluation output directory` → `Skip map PNGs? y/n` |
+| **5.4 pattern — database** | `Validation data source` → `Validation configuration` → `Connection configuration` → `Generalized logic database` → `New local evaluation output directory` |
+| **5.4 pattern — archive** | `Validation data source` → `Validation configuration` |
+| **5.5 reproduction** | `Validation configuration` → `Output directory` → `Skip map PNGs? y/n` → `Replace existing comparison reports? y/n` |
+
+`Validation configuration` selects the task's JSON file. Its default is under `instantiation_validation/`: `oelg_config.json` for 5.1/5.2, `database_validation_config.json` for 5.3/database 5.4, and `paper_experiment_config.json` for archive 5.4/5.5.
+
+| Question | Meaning / default when left blank |
+| --- | --- |
+| `Connection configuration` | Connection-settings JSON; default comes from the database-validation profile, normally root `construct_config.json` |
+| `DOELG instance database` / `OELG instance database` | Existing result graphs to compare; 5.1 instead writes the selected OELG destination. Defaults come from the owning instantiation configurations/profile |
+| `DOELG map root (reuse existing rasters)` / `OELG map root (reuse existing rasters)` | Each method's map root, containing `output_event_maps_grid/geotiff` and `output_factor_maps_grid_geotiff`; default comes from the profile/map settings. Missing raster sets are generated from the selected existing graphs |
+| `Generalized logic database` | Abstract graph for pattern statistics, not an instance graph; derived from the profile/construction configuration |
+| `New local evaluation output directory` | Empty result directory for 5.3/database 5.4; blank creates a fresh run under the profile's `output_dir`, supplied `data/database_validation` |
+| `Output directory` | 5.1: OELG audit exports, default `output_folder`; 5.2: OELG maps, default from distance-map settings; 5.5: reproduction outputs, default from the paper profile |
+| `Skip maps entirely? y/n` | 5.1 only: Yes writes graph/audit results and skips all mapping; No also generates maps |
+| `Skip map PNGs? y/n` | Yes keeps map GeoTIFFs and omits map PNGs; comparison curves/reports are still produced |
+| `Replace existing comparison reports? y/n` | 5.5 only: Yes permits replacement of comparison reports; No preserves existing reports |
+
 ## Execution order and dependencies
 
 ### Choose a workflow
 
-| Goal | Order | Requirements |
-| --- | --- | --- |
-| Verify archived paper values | **5.5** directly; **4.3** for Table 4 only; **5.4 → Existing archives** for patterns only | Bundled inputs; no Neo4j, embedding, geocoding or LLM services after environment setup |
-| Infer/map using supplied abstract graphs | Import dumps → **3.3** (or **3.1 → 3.2**) | `DOELG-abstract`, local scenario inputs and a separate instance destination |
+| Goal | Order | Requirements                                                                                        |
+| --- | --- |-----------------------------------------------------------------------------------------------------|
+| Verify archived paper values | **5.5** directly; **4.3** for Table 4 only; **5.4 → Existing archives** for patterns only | need Neo4j instance connection                                                                      |
+| Infer/map using supplied abstract graphs | Import dumps → **3.3** (or **3.1 → 3.2**) | `DOELG-abstract`, local scenario inputs and a separate instance destination                         |
 | Construct new knowledge from text | **1.6 → 2.5 → 3.3** | Use the same history database for menus 1–2; select it explicitly as menu 3's source logic database |
 | Compare live methods | **3.3** and **5.1** → **5.3** | Same scenario/depth/grid; populated instance graphs or complete compatible rasters for both methods |
-| Map OELG separately | **5.1 → 5.2** | Needed only if maps were skipped or must be redrawn; 5.3 can also generate missing maps |
-| Incrementally update a scenario | Baseline **3.1/3.3 → 3.4** | Existing baseline, compatible abstract logic, new events, separate empty update database |
-| Evaluate new extraction workbooks | **4.4 → 4.1/4.2/4.3** | Verified ground truth; skip 4.4 for already prepared workbooks |
-| Inspect live abstract patterns | **2.1** (normally **2.5**) → **5.4 → Local Neo4j databases** | Select the generalized logic database, not an instance database |
+| Map OELG separately | **5.1 → 5.2** | Needed only if maps were skipped or must be redrawn; 5.3 can also generate missing maps             |
+| Incrementally update a scenario | Baseline **3.1/3.3 → 3.4** | Existing baseline, compatible abstract logic, new events, separate empty update database            |
+| Evaluate new extraction workbooks | **4.4 → 4.1/4.2/4.3** | Verified ground truth; skip 4.4 for already prepared workbooks                                      |
+| Inspect live abstract patterns | **2.1** (normally **2.5**) → **5.4 → Local Neo4j databases** | Select the generalized logic database, not an instance database                                     |
 
 Each `all` covers only its own menu group. Selecting a database in one group does not select it automatically in another. For separate stage runs, 1.2–1.5 require extracted records; 2.2 requires the hierarchy and cluster file from 2.1; 2.3 requires abstract disasters plus extracted observations/factors. Complete observation-pattern and spatial stages before full generalization. Run 2.4 after 2.3 for observation coverage statistics. Keep cluster files and graph versions matched; use separate configured export paths for independent datasets.
 
-The default extraction input is the small `sample_corpus`, intended for demonstration. It does not reproduce the full 13,727-sentence paper experiment or guarantee its graph counts. The larger bundled corpus is `wiki_corpus`; explicitly select and verify the intended input for a full run. Live results depend on corpus, graph/model versions and settings. Task 5.5 verifies frozen paper values: 24 Table 4 values, 80 field metrics and the archived pattern summary. It does not rebuild historical graphs or perform Figure 22's update. Tasks generate graph content/maps/reports; manuscript screenshot layouts and formatted tables may need separate composition.
+The default extraction input is the small `sample_corpus`, intended for demonstration. It does not reproduce the full paper experiment or guarantee its graph counts. The larger bundled corpus is `wiki_corpus`; explicitly select and verify the intended input for a full run. Live results depend on corpus, graph/model versions and settings. Task 5.5 verifies frozen paper values: 24 Table 4 values, 80 field metrics and the archived pattern summary. It does not rebuild historical graphs or perform Figure 22's update. Tasks generate graph content/maps/reports; manuscript screenshot layouts and formatted tables may need separate composition.
 
 ### Databases and services
 
-Use Neo4j 5.24.0 or later with APOC. For supplied knowledge, import `Geo-type.dump`, `DOELG-abstract.dump` and `OELG-abstract.dump` into the same Neo4j instance under the corresponding names. `geocoding.type_database` selects the type graph (supplied `Geo-type`). Menus 1–2 can be skipped when the required abstract knowledge is imported.
-
-| Work | Additional requirements beyond Python |
-| --- | --- |
-| Menu 1 | Neo4j; configured extraction/enrichment LLM APIs; Ollama embeddings for fusion/sensor retrieval; sensor workbook/index for `obs_pat`; Nominatim endpoints, basin data and type graph for `spatial` |
-| Menu 2 | Existing history graph; embeddings and LLMs for generalization stages; `stats` reads existing graph content |
-| Menu 3 instantiate/update | Neo4j, initial-event GeoJSON, geographic feature layers and enabled basin layer; model access for missing environment rules |
-| Menu 3 map / 5.2 | Existing graph and local mapping inputs; DOELG `--snapshot` permits offline mapping |
-| 5.1 | OELG causal graph, observation knowledge and local scenario layers; supplied strict profile uses stored environment rules |
-| Menu 4 / archive 5.4 / 5.5 | Local workbooks/snapshots/geometries/reference files only |
-
-Missing write-target databases are created in the running Neo4j instance for menu 1, DOELG instantiation/update and OELG instantiation. This requires multiple-database support and creation privileges. Existing databases are reused without clearing; source databases and map-only graphs must already exist. Defaults use Shanghai date `YYYYMMDD`: `DOELG-history-demo-{date}`, `DOELG-instance-{date}`, `OELG-instance-{date}`; the update default adds `-update`. Select an explicit earlier name when continuing another day's run.
-
-## Parameters and commands
-
-Run commands from the project root. Menu prompts expose common options; additional options are available directly. `python main/<script>.py --help` lists the accepted arguments. CLI overrides take precedence over the selected task configuration. Startup credentials apply throughout the interactive session; direct commands read configuration/environment values.
-
-### Extraction and generalization
-
-| Argument | Meaning / default | Applies to |
-| --- | --- | --- |
-| `-t, --task` | Required; use the task names in menus 1 or 2 above | Both |
-| `--config` | Construction/model/connection settings; `construct_config.json` | Both |
-| `-db, --database` | History/generalization database; `extraction.database` or `generalization.database` | Both |
-| `-w, --workers` | Worker count; corresponding section's `workers` (supplied `20`) | Both; individual helper limits can also be configured |
-| `-i, --input_dir` | Input JSON directory; `extraction.input_dir` | Menu 1 `extract` / `all` |
-
-```powershell
-python main/main_extraction.py -t all -db my-history -i data/extraction_source_dataset/sample_corpus
-python main/main_generalization.py -t all -db my-history
-```
-
-Both menus prompt for configuration → database → workers; extraction also prompts for input directory on `extract`/`all`. Their configured data paths resolve from the project root.
-
-### DOELG instantiation, mapping and update
-
-| Argument | Meaning / default |
-| --- | --- |
-| `-t, --task` | Required: `instantiate`, `map`, `all`, `update` |
-| `--config, --map-config` | Instantiation/mapping configuration; `instantiation_config.json` |
-| `--construct-config` | Connection/model configuration; `construct_config.json` |
-| `-ldb, --logic_database` | Abstract source; `instantiation.logic_database` (supplied `DOELG-abstract`) |
-| `-idb, --ins_database` | Instance destination, or existing instance for mapping; root `database` |
-| `--events` | Initial-event GeoJSON; `instantiation.events_file`, falling back to `region`; update uses `update.events_file` |
-| `--max-depth` | Propagation depth; supplied `2`; `0` permits initial events only |
-| `-w, --workers` | Reserved; reference inference remains sequential |
-| `--source-database` | For `update` only: baseline instance to copy; `update.source_database`, falling back to root `database` |
-| `--snapshot` | For mapping: offline source snapshot instead of Neo4j |
-| `--output-dir` | Mapping destination, or empty update-run directory; configured default otherwise |
-| `--no-plots` | Keep GeoTIFFs and skip map PNGs |
-| `--show-config` | Print effective settings and exit without connections/writes |
-
-Menu 3 prompts for configuration and connection configuration first. `instantiate`/`all` then ask for source logic, initial events and instance database. `map` asks for an optional snapshot; a supplied snapshot replaces the database prompt. `update` asks for baseline database, logic database, new events and destination. Mapping tasks then ask for output directory and PNG choice. Depth/workers are configured in JSON or by direct CLI.
-
-```powershell
-python main/main_instantiation.py -t all -ldb DOELG-abstract -idb my-instance --output-dir data/ins_figures/my-instance
-python main/main_instantiation.py -t map --snapshot path/to/snapshot.json --output-dir data/ins_figures/offline
-python main/main_instantiation.py -t update --source-database my-instance -idb my-instance-update --events data/geo_dataset/events_zhengzhou/update.geojson
-python main/main_instantiation.py -t instantiate --show-config
-```
-
-Mapping requires an absent/empty output directory. Update requires three different database names: baseline, abstract logic and update destination. Paths inside the instantiation configuration resolve from that file's directory; explicit CLI paths resolve from the project root.
-
-### Extraction validation
-
-| Argument | Meaning / default |
-| --- | --- |
-| `-t, --task` | Required: `evaluate`, `plot`, `table`, `prepare` |
-| `-k, --kind` | `event`, `geo`, `relation`; required except for `table` |
-| `--input` | Workbook; required for `prepare`/`evaluate` |
-| `--output` | Required new workbook for `prepare`; CSV for `table` (default `<base>/results/table4.csv`) |
-| `--only-raw` | Prepare predictions without ground truth; event/relation preparation only |
-| `--base-dir` | For `plot`: one target's directory; default `data/extraction_validation_dataset/<kind>` (`relation` uses `event_relation`). For `table`: dataset parent, default `data/extraction_validation_dataset` |
-| `--output-dir` | Plot destination; default `data/extraction_validation_dataset/results/<kind>` |
-| `--shots` | Few-shot counts for plot/table; default `1 5 10 30` |
-
-The menu asks for the target except on `table`, then shows only the applicable paths/options.
-
-```powershell
-python main/main_extraction_validation.py -t table
-python main/main_extraction_validation.py -t evaluate -k event --input data/extraction_validation_dataset/event/default-10shot.xlsx
-python main/main_extraction_validation.py -t plot -k geo --shots 1 5 10 30
-python main/main_extraction_validation.py -t prepare -k event --input input.xlsx --output prepared.xlsx
-```
-
-### OELG, comparison, patterns and reproduction
-
-Task aliases `patterns` and `reproduce` remain accepted for `pattern` and `reproduction`.
-
-| Argument | Meaning / applicability |
-| --- | --- |
-| `-t, --task` | Required: `instantiate`, `map`, `compare`, `pattern`, `reproduction` |
-| `--config` | Task/source configuration; defaults in the next table |
-| `--instance-database` | OELG `instantiate`/`map` only; overrides `instance_database` |
-| `--source` | `database` or `archive`: compare defaults to database; pattern defaults to archive in direct CLI and offers a choice in the menu; reproduction is archive-only |
-| `--construct-config` | Connection override for database compare/pattern only |
-| `--doelg-database`, `--oelg-database` | Instance graphs for database compare |
-| `--doelg-raster-dir`, `--oelg-raster-dir` | Map roots to reuse in database compare; missing sets are generated |
-| `--oelg-snapshot` | Advanced database-compare override; otherwise automatic discovery/metadata; no menu prompt |
-| `--pattern-database` | Generalized logic graph for database pattern statistics |
-| `--output-dir` | OELG audit directory (`instantiate`), OELG map directory (`map`), fresh database-validation directory, or reproduction directory |
-| `--no-plots` | OELG `instantiate`: skip mapping entirely. `map`, database compare and reproduction: retain GeoTIFFs, skip map PNGs; comparison charts remain enabled |
-| `--overwrite` | Replace comparison reports for compare/reproduction; database validation still requires an empty run directory |
-| `--show-source` | For compare/pattern/reproduction: print source settings and exit without service connections |
-
-| Task/source | Default configuration under `instantiation_validation/` | Restrictions |
-| --- | --- | --- |
-| 5.1 / 5.2 | `oelg_config.json` | No `--source`, `--construct-config`, `--show-source` or `--overwrite`; shared connection settings/environment are used |
-| Database 5.3 / 5.4 | `database_validation_config.json` | Pattern uses the logic graph only; no instance/raster, PNG or overwrite options |
-| Archive 5.3 | `importance_comparison_config.json` | Configure raster/output paths in JSON; no `--output-dir` or `--no-plots` |
-| Archive 5.4 | `paper_experiment_config.json` | Configuration/source-display only; no output/PNG/overwrite options |
-| 5.5 | `paper_experiment_config.json` | Archive only; rejects database options |
-
-The 5.1/5.2 menu asks for configuration, instance database, output and map choice. Database 5.3 asks for configuration, connection configuration, both instance databases, both raster roots, output and PNG choice. Database 5.4 asks for configuration, connection configuration, logic database and output. Archive 5.4 needs only its configuration; 5.5 also offers output, PNG and report-replacement choices.
-
-```powershell
-python main/main_validation.py -t instantiate --instance-database my-oelg
-python main/main_validation.py -t map --instance-database my-oelg
-python main/main_validation.py -t compare --doelg-database my-instance --oelg-database my-oelg
-python main/main_validation.py -t compare --show-source
-python main/main_validation.py -t pattern --source database --pattern-database DOELG-abstract
-python main/main_validation.py -t reproduction
-python main/main_validation.py -t reproduction --overwrite
-python main/main_validation.py -t compare --source archive
-```
-
-Run archive compare after reproduction has produced its configured rasters. OELG map-only uses the snapshot selected in `oelg_config.json`; if instantiation printed a suffixed result name, select that result in the configuration before redrawing. Database compare discovers its result independently. Validation configuration paths resolve from their file's directory.
-
-## Configuration and outputs
-
-### Configuration files
-
-| File | Main settings |
-| --- | --- |
-| `construct_config.json` | `neo4j` connection/credentials; `llm` models/API settings; `embeddings` Ollama addresses/models; `extraction` input/database/workers; `fusion`; `geocoding` endpoints/type graph/basin; `sensor_manual`; `factor_mapping`; `generalization` database, weights/threshold, rules, statistics and export paths; `translation` dictionary |
-| `instantiation_config.json` | Root `database`, feature layers and mapping settings; `instantiation` inference settings; `update` baseline/destination/events/output/batch size |
-| `instantiation_validation/oelg_config.json` | `abstract_database` (OELG causal source), `observation_database` (DOELG observation source), `instance_database`, `snapshot`, scenario layers, depth, environment filtering, audit output |
-| `instantiation_validation/oelg_distance_config.json` | Shared `map_config`, OELG output directory and depth-only `depth_decay` (supplied `0.5`) |
-| `instantiation_validation/database_validation_config.json` | Owning configuration paths; non-null database/raster overrides; default evaluation output |
-| `instantiation_validation/importance_comparison_config.json` | Raster pairs, validation point sets, evaluation settings and comparison output |
-| `instantiation_validation/paper_experiment_config.json` | Frozen snapshots, provenance/reference files, expected counts and reproduction output |
-
-The main inference settings are `max_depth` (`2`), `study_area` (EPSG:4326 bounds), `elevation` (`120 m`), `ori_importance` (`120`), `importance_punish` (`30`), `i_fac` (`1`), `confidence_to_probability_scale` (`7`), `min_secondary_confidence`, distance bands/weights/search limits, and `basin_file` (`null` disables basin matching). Runtime settings are loaded before inference. Menu 3's source and destination overrides apply to both inference and mapping as appropriate.
-
-Mapping uses root `region`, `features_folder`, `reference_raster` (or `grid_size`, default `200`), `distance_crs`, `default_cutoff_m`, per-event/type/geometry cutoff overrides, `geometry_kernels`, `spatial_aggregation`, `overlap_strength`, `path_boost`, hazard/type weights and `exclude_geo_types`. `initial_event_importance` controls mapped initial-event scores separately from inference's `ori_importance`. PNG/display settings and `target_coord` control map presentation and the cell-factor histogram. Review region, clipping bounds, initial events, feature/basin layers and metric CRS together when changing scenario.
-
-The supplied OELG profile uses `max_depth=2`, `environment_mode=strict`, OELG environment rules, elevation `120 m` and `report_and_skip` for missing environment rules/layers. Database comparison derives defaults from the owning configurations, applies non-null profile overrides, then explicit CLI overrides. Use matched scenario inputs, propagation depth and grids for a live method comparison. Frozen reproduction settings remain independent of live settings.
-
-For direct commands, Neo4j clients honor `NEO4J_URI`, `NEO4J_DATABASE_URL`, `NEO4J_USERNAME` and `NEO4J_PASSWORD`. An LLM entry's `api_key_env` overrides its configured key when populated; interactive startup applies the entered DeepSeek Key to DeepSeek clients throughout that session.
-
-### Outputs and reruns
-
-| Workflow | Default output | Rerun behavior |
-| --- | --- | --- |
-| Generalization | Selected graph; `all-cluster.pickle`; `data/generalization` | Shared export paths can be replaced by another run |
-| DOELG instantiation | Instance graph; `data/logs/instantiation_execution.json`; configured event-tree/feature exports | Existing database is not cleared; choose a new database for an independent run |
-| DOELG mapping | `data/ins_figures/distance_fields` | Output must be absent/empty |
-| Update | New run under `data/ins_figures/updates`, including `update_status.json` and `maps/` | Baseline preserved; destination graph/output must be empty |
-| OELG | Audit under `data/oelg_comparison/zhengzhou`; maps under `data/ins_figures/oelg_distance_fields` | Occupied result names/folders receive suffixes; retain the printed paths |
-| Extraction validation | `data/extraction_validation_dataset/results` | `prepare` requires a new workbook |
-| Database validation | New run under `data/database_validation`; `validation_status.json`, raster provenance and HTML/CSV comparison reports | Explicit run directory must be empty; valid maps/cache are reused |
-| Paper reproduction | `data/paper_reproduction`; `reproduction_status.json`, maps and comparison reports | Matching maps reused; `--overwrite` replaces comparison reports |
-
-The instantiation execution report is a summary, not a full console transcript. Record console output separately when a complete log is needed. Frozen inputs are under `data/previous_paper_experiment`; geometry/scenario layers under `data/geo_dataset`; validation points under `data/validation_points`; dictionaries/appendix rules under `data/dictionary`.
-
-### Auxiliary utilities
-
-`main/main_geo_types.py` supports the Appendix A/B type graph used in Section 3.3.2; it is not a numbered menu task. An imported, valid `Geo-type` graph needs no rebuild.
-
-```powershell
-python main/main_geo_types.py -t preview
-python main/main_geo_types.py -t validate -db Geo-type
-```
-
-Arguments: required `-t/--task` (`preview`, `validate`, `rebuild`), `--config` (construction configuration), `--rules` (default `geocoding.type_rules`), `-db/--database` (default `geocoding.type_database`) and `--output-dir` (default `data/geo_type_graph`). Preview is offline; validate reads the graph. The rebuild helper accepts only the legacy name `geos-type-1`, backs up/replaces that graph and validates it. Select the rebuilt name in `geocoding.type_database` before use; rerun the spatial stage to refresh existing extracted paths.
-
-To update a sharing archive:
-
-```powershell
-python main/build_windows_package.py --output dist/DOELG_windows.zip
-```
-
-`--output` defaults to the path shown. `--prepare-data` instead restores only missing inputs from `DOELG_dataset.tar` and exits. Packaging includes current code, README and required inputs, encrypts shared credentials, and leaves source configuration values unchanged. Generated results, `.runtime` and the local-only `run_doleg.bat` are excluded. See [instantiation_validation/README.md](instantiation_validation/README.md) for additional validation details.
+Use Neo4j 5.24.0 or later with APOC. For supplied knowledge, import `Geo-type.dump`, `DOELG-abstract.dump` and `OELG-abstract.dump` into the same Neo4j instance under the corresponding names. `geocoding.type_database` selects the type graph (supplied `Geo-type`). 
