@@ -3,7 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.construct_config import get_chat_model_options, get_setting
 from src.graph_language import english_geo_results, english_term
 from langchain.agents import create_agent
-from ontology.neo4jmodel import Neo4jDatabaseConnector, GeoObject, DisasterEvent, OriginText, Geometry
+from ontology.neo4jmodel import GeoObject, DisasterEvent, OriginText, Geometry
 import re
 import math
 from other.geo_encoding import get_location
@@ -1113,7 +1113,3 @@ def main_calculate_spatial_relations_only(neo_connector):
             new_relations["type_path"] = i['type_path']
             spatial_r.relations = new_relations
             spatial_r.save()
-
-
-if __name__ == '__main__':
-    neo = Neo4jDatabaseConnector(get_setting('standalone.geo_database'))

@@ -1,8 +1,11 @@
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
+
+from src.configuration_secrets import decode_configuration
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / 'construct_config.json'
@@ -18,6 +21,7 @@ def configure_construct(config_path=None):
         settings = json.load(stream)
     if not isinstance(settings, dict):
         raise ValueError(f'Construction configuration must be a JSON object: {path}')
+    settings = decode_configuration(settings, path)
     _config = settings
     _config_path = path
     return settings
@@ -31,6 +35,14 @@ def configure_from_cli(argv=None):
     return configure_construct(arguments.config)
 
 
+def resolve_database_name(value, day=None):
+    """Expand {date} as YYYYMMDD using the Shanghai calendar, keeping explicit names intact."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError('Database name must be a nonempty string.')
+    current = day or datetime.now(timezone(timedelta(hours=8))).date()
+    return value.strip().replace('{date}', current.strftime('%Y%m%d'))
+
+
 def get_setting(key):
     """Read a required setting using a dot-separated key such as 'fusion.dbscan.eps'."""
     if _config is None:
@@ -41,22 +53,26 @@ def get_setting(key):
             value = value[part]
     except (KeyError, TypeError) as error:
         raise KeyError(f'Missing construction setting {key!r} in {_config_path}') from error
-    return value
+    return resolve_database_name(value) if key.split('.')[-1].endswith('database') else value
 
 
 def get_neo4j_url():
-    """Build a Neomodel URL from separate credentials, accepting legacy authenticated URLs."""
+    """Use startup/environment connection settings consistently across every graph client."""
     settings = get_setting('neo4j')
-    parsed = urlsplit(settings['url'])
-    if not parsed.scheme or not parsed.hostname:
+    environment_url = os.environ.get('NEO4J_DATABASE_URL')
+    parsed = urlsplit(environment_url or settings['url'])
+    server = urlsplit(os.environ.get('NEO4J_URI')) if os.environ.get('NEO4J_URI') else parsed
+    if not server.scheme or not server.hostname:
         raise ValueError('neo4j.url must include a protocol and server address.')
-    username = settings.get('username', unquote(parsed.username or ''))
-    password = settings.get('password', unquote(parsed.password or ''))
+    default_username = unquote(parsed.username) if environment_url and parsed.username is not None else settings.get('username', unquote(parsed.username or ''))
+    default_password = unquote(parsed.password) if environment_url and parsed.password is not None else settings.get('password', unquote(parsed.password or ''))
+    username = os.environ.get('NEO4J_USERNAME') or default_username
+    password = os.environ.get('NEO4J_PASSWORD') or default_password
     if not isinstance(username, str) or not isinstance(password, str):
         raise ValueError('neo4j.username and neo4j.password must be strings.')
-    server = parsed.netloc.rsplit('@', 1)[-1]
+    host = server.netloc.rsplit('@', 1)[-1]
     credentials = f'{quote(username, safe="")}:{quote(password, safe="")}@' if username or password else ''
-    return urlunsplit(parsed._replace(netloc=credentials + server))
+    return urlunsplit(server._replace(netloc=credentials + host, path='', query='', fragment=''))
 
 
 def get_config_path():
@@ -83,6 +99,9 @@ def get_chat_model_options(name):
     options = dict(get_setting(f'llm.{name}'))
     environment_variable = options.pop('api_key_env', None)
     environment_key = os.environ.get(environment_variable) if environment_variable else None
+    description = ' '.join(str(options.get(key, '')) for key in ('model', 'base_url')).casefold()
+    if os.environ.get('DOELG_SERVICES_CONFIGURED') == '1' and (environment_variable == 'DEEPSEEK_API_KEY' or 'deepseek' in description):
+        environment_key = os.environ.get('DEEPSEEK_API_KEY') or environment_key
     if environment_key:
         options['api_key'] = environment_key
     return options

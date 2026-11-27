@@ -1,5 +1,5 @@
 from ontology.neo4jmodel import (
-    Neo4jDatabaseConnector, DisasterEvent, EnvironmentDescription,
+    EnvironmentDescription,
     MergeDisasterEvent, GlobalDisasterEvent, EnvironmentRule
 )
 from geo_extraction import llm
@@ -347,11 +347,3 @@ def generate_env_rule_to_database():
                         disaster.envRule_argument.connect(rule_node)
 
                     print(env_rules)
-
-
-if __name__ == '__main__':
-    neo = Neo4jDatabaseConnector(get_setting('standalone.environment_database'))
-    disaster_event_nodes = DisasterEvent.nodes.all()
-    for en in disaster_event_nodes:
-        if not en.envDes_argument.all():
-            get_save_event_envDes(en)

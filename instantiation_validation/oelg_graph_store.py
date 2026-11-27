@@ -144,6 +144,27 @@ def write_builder(driver, builder, database):
         return session.execute_write(write)
 
 
+def resolve_snapshot(driver, database, snapshot=None):
+    """Select the latest complete current-schema result, or validate an explicit advanced choice."""
+    query = '''MATCH (s:OELGSnapshot)
+        WHERE s.status='complete' AND s.schema_version=$schema
+          AND coalesce(s.event_count, 0) > 0 AND coalesce(s.feature_count, 0) > 0
+          AND ($snapshot IS NULL OR s.name=$snapshot)
+        RETURN properties(s) AS s
+        ORDER BY coalesce(s.completed_at, datetime('1970-01-01T00:00:00Z')) DESC, s.name DESC
+        LIMIT 1'''
+    with driver.session(database=database, default_access_mode='READ') as session:
+        result = session.execute_read(lambda tx: tx.run(query, schema=SCHEMA_VERSION, snapshot=snapshot).single())
+    meta = result['s'] if result else {}
+    if (not meta.get('name') or meta.get('status') != 'complete' or
+            meta.get('schema_version') != SCHEMA_VERSION or
+            not meta.get('event_count') or not meta.get('feature_count')):
+        detail = f' matching {snapshot!r}' if snapshot else ''
+        raise ValueError(f'No complete OELG graph snapshot{detail} in database {database!r}. '
+                         'Run task 5.1 against this instance database first, or select the database containing its completed results.')
+    return meta['name']
+
+
 def read_graph(driver, database, snapshot):
     """No export-file or original-layer fallback. Read one complete graph snapshot."""
     from shapely import wkt
@@ -152,7 +173,8 @@ def read_graph(driver, database, snapshot):
         def read(tx):
             result = tx.run('MATCH (s:OELGSnapshot {name:$snapshot}) RETURN properties(s) AS s', snapshot=snapshot).single()
             if not result or result['s'].get('status') != 'complete' or result['s'].get('schema_version') != SCHEMA_VERSION:
-                raise ValueError('No complete OELG graph snapshot. Run instantiation_oelg.py first.')
+                raise ValueError(f'No complete OELG graph snapshot {snapshot!r} in database {database!r}. '
+                                 'Run task 5.1 against this instance database first.')
             meta = result['s']
             rows = tx.run('''MATCH (e:DisasterEvent {oelg_snapshot:$snapshot})
                 OPTIONAL MATCH (p:DisasterEvent)-[r:CAUSE]->(e)

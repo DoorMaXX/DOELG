@@ -1,4 +1,4 @@
-from ontology.neo4jmodel import Neo4jDatabaseConnector, Factor, StandardFactor
+from ontology.neo4jmodel import Factor, StandardFactor
 from geo_extraction import llm
 from langchain.agents import create_agent
 from pydantic import BaseModel, Field
@@ -503,8 +503,3 @@ def update_standard_factors():
         sf_name = sf_node.factor_name
         sf_node.relate_geos = indicator_mapping.get(sf_name, [])
         sf_node.save()
-
-
-if __name__ == '__main__':
-    neo = Neo4jDatabaseConnector(get_setting('standalone.factor_database'))
-    update_standard_factors()

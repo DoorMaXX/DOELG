@@ -4,7 +4,7 @@ from neomodel import (
     StringProperty, IntegerProperty, UniqueIdProperty, BooleanProperty,
     RelationshipTo, FloatProperty, ArrayProperty, JSONProperty
 )
-from src.construct_config import get_neo4j_url, get_setting
+from src.construct_config import get_neo4j_url, get_setting, resolve_database_name
 
 # ========== Database Connection ==========
 class Neo4jDatabaseConnector:
@@ -12,7 +12,7 @@ class Neo4jDatabaseConnector:
 
     def __init__(self, database_name=None):
         """Connect to the selected database using the configured Neo4j server URL."""
-        database_name = database_name if database_name is not None else get_setting('neo4j.default_database')
+        database_name = resolve_database_name(database_name if database_name is not None else get_setting('neo4j.default_database'))
         self.DATABASE_URL = get_neo4j_url()
         config.DATABASE_URL = self.DATABASE_URL
         self.db = neo4j_db
@@ -21,7 +21,8 @@ class Neo4jDatabaseConnector:
 
     def connect_database(self, database_name=None):
         """Switch the active database, falling back to the configured default when omitted."""
-        database_name = database_name if database_name is not None else get_setting('neo4j.default_database')
+        database_name = resolve_database_name(database_name if database_name is not None else get_setting('neo4j.default_database'))
+        self.database_name = database_name
         self.db.set_connection(self.DATABASE_URL + f"/{database_name}")
 
 

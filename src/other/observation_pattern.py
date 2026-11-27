@@ -1,4 +1,4 @@
-from ontology.neo4jmodel import Neo4jDatabaseConnector, ObservationPattern, DisasterEvent, Factor
+from ontology.neo4jmodel import ObservationPattern, Factor
 from src.graph_language import english_term
 from geo_extraction import llm
 from langchain.agents import create_agent
@@ -358,12 +358,3 @@ def do_factor_delete():
 
     for df in delete_factors:
         df.delete()
-
-
-if __name__ == '__main__':
-    neo = Neo4jDatabaseConnector(get_setting('standalone.observation_database'))
-    disaster_nodes = DisasterEvent.nodes.all()
-    for de in disaster_nodes:
-        observation_nodes = de.trigger.all()
-        for observation_node in observation_nodes:
-            get_save_event_obsPat(observation_node, de)

@@ -22,47 +22,28 @@ from ontology.neo4jmodel import (Neo4jDatabaseConnector, GlobalDisasterEvent, Me
                                  OSMFeature,
                                  Sensor, GeneralizedObservationPattern, Factor)
 from other.environment_descrption import get_env_rule_chain, evaluate_feature_against_rule
+from src.instantiation_settings import get_instantiation_settings, set_instantiation_settings
 
 warnings.filterwarnings('ignore')
 
-logic_graph_database = "events-logic-all-1zz-sensor-en-0904"
-ins_graph_database = "events-ins-all-zhengzhou-1-sensor-en-parallel"
-
-geos_output_folder = "./data/output/zhengzhou_frame_1"
-geos_input_folder = "./data/geo_dataset/geos_zhengzhou"
-
+logic_graph_database = None
+ins_graph_database = None
+geos_output_folder = None
+geos_input_folder = None
 neo = None
-elevation = 120
-ori_importance = 120
-importance_punish = 30
-i_fac = 1
-importance_percentile = 0
-
+elevation = None
+ori_importance = None
+importance_punish = None
+i_fac = None
+LEVELS = []
+IMP = []
+CONFIDENCE_TO_PROBABILITY_SCALE = None
+MAX_DIST_MAPPING = {}
+HYBAS_GDF = None
+BASIN_ADJ_MAP = {}
 ALL_EVENTS_CACHE = {}
 GLOBAL_EXECUTOR = None
-
-file_num = 0
-
-LEVELS = [0, 10, 100, 1000, 5000, 10000]
-IMP = [100, 80, 60, 40, 20, 5]
-
-CONFIDENCE_TO_PROBABILITY_SCALE = 7.0
-
-MAX_DIST_MAPPING = {
-    "Very Close": 10,
-    "Close": 100,
-    "Medium": 1000,
-    "Far": 5000,
-    "Very Far": 10000
-}
-
-try:
-    HYBAS_GDF = gpd.read_file("data/geo_dataset/basin/henan_basin-2.shp")
-    BASIN_ADJ_MAP = dict(zip(HYBAS_GDF['HYBAS_ID'], HYBAS_GDF['NEXT_DOWN']))
-except Exception as e:
-    print(f"Warning: Basin data load failed: {e}")
-    HYBAS_GDF = None
-    BASIN_ADJ_MAP = {}
+_runtime_settings = {}
 
 _EVENT_IMPACT_TYPE_CACHE: Dict[str, Optional[str]] = {}
 
@@ -147,6 +128,43 @@ def get_matrix_secondary_candidates(parent_event: Any,
 _GEOJSON_CACHE = {}
 _RELATE_EVENT_CACHE = {}
 _OBSERVATION_TASK_CACHE = {}
+
+
+def configure_runtime(settings=None, load_basin=True):
+    """Apply resolved settings and clear caches before processing a new database or region."""
+    global logic_graph_database, ins_graph_database, geos_output_folder, geos_input_folder
+    global elevation, ori_importance, importance_punish, i_fac, LEVELS, IMP
+    global CONFIDENCE_TO_PROBABILITY_SCALE, MAX_DIST_MAPPING, HYBAS_GDF, BASIN_ADJ_MAP
+    global neo, _runtime_settings
+    settings = get_instantiation_settings() if settings is None else dict(settings)
+    basin = None
+    adjacency = {}
+    if load_basin:
+        if not os.path.isdir(settings['features_folder']):
+            raise FileNotFoundError(f"Feature directory does not exist: {settings['features_folder']}")
+        if settings['basin_file'] is not None:
+            basin = gpd.read_file(settings['basin_file'])
+            adjacency = dict(zip(basin['HYBAS_ID'], basin['NEXT_DOWN']))
+    logic_graph_database = settings['logic_database']
+    ins_graph_database = settings['instance_database']
+    geos_input_folder = settings['features_folder']
+    geos_output_folder = settings['geos_output_folder']
+    elevation = settings['elevation']
+    ori_importance = settings['ori_importance']
+    importance_punish = settings['importance_punish']
+    i_fac = settings['i_fac']
+    LEVELS = list(settings['distance_levels'])
+    IMP = list(settings['distance_importance'])
+    CONFIDENCE_TO_PROBABILITY_SCALE = settings['confidence_to_probability_scale']
+    MAX_DIST_MAPPING = dict(settings['max_distance_mapping'])
+    HYBAS_GDF, BASIN_ADJ_MAP = basin, adjacency
+    neo = None
+    _runtime_settings = set_instantiation_settings(settings)
+    for cache in (ALL_EVENTS_CACHE, _EVENT_IMPACT_TYPE_CACHE, _GEOJSON_CACHE,
+                  _RELATE_EVENT_CACHE, _OBSERVATION_TASK_CACHE):
+        cache.clear()
+    return dict(_runtime_settings)
+
 
 
 def load_geojson_data(geo_name, region_extent=None):
@@ -299,7 +317,7 @@ def calculate_topology_distance(ori_geom_proj, scd_gdf_proj, scd_geo_name, topol
         if key in distance_desc:
             max_dist = val
             break
-    if max_dist == 0: max_dist = 10000
+    if max_dist == 0: max_dist = max(MAX_DIST_MAPPING.values())
 
     if topology in ["Intersect", "Contains", "Contained By", "Equal", "Adjacent"]:
         start_level_idx = 0
@@ -965,10 +983,14 @@ def export_secondary_disasters_to_geojson(results: dict, geos_output_folder_in):
 
 def build_event_node(current_event, current_features, current_extent=None, region_extent=None, visited=None,
                      depth=0,
-                     max_depth=2,
+                     max_depth=None,
                      output_folder='',
-                     min_secondary_confidence=0.0):
+                     min_secondary_confidence=None):
     """Build an event tree from the source event and its affected extent."""
+    if max_depth is None:
+        max_depth = _runtime_settings['max_depth']
+    if min_secondary_confidence is None:
+        min_secondary_confidence = _runtime_settings['min_secondary_confidence']
     if current_extent is None:
         return None
 
@@ -1414,8 +1436,12 @@ def construct_instantiation_database(ori_events: list,
                                      ori_extents: list = None,
                                      ori_features: list = None,
                                      region_extent=None,
-                                     max_depth=2):
-    """Build event trees and persist them in the instance database."""
+                                     max_depth=None, event_num_start=0, strict=False):
+    """Build event trees and persist them using the configured depth and output paths."""
+    if isinstance(event_num_start, bool) or not isinstance(event_num_start, int) or event_num_start < 0:
+        raise ValueError('event_num_start must be a nonnegative integer.')
+    if max_depth is None:
+        max_depth = _runtime_settings['max_depth']
     import time
     from datetime import datetime
     start_time = time.time()
@@ -1441,30 +1467,33 @@ def construct_instantiation_database(ori_events: list,
         "status": "success",
         "completion_time": completion_time,
         "execution_duration_seconds": execution_duration_seconds,
-        "execution_duration_formatted": f"{execution_duration_seconds} 秒",
+        "execution_duration_formatted": f"{execution_duration_seconds} seconds",
         "event_trees_generated": len(event_trees)
     }
 
-    output_filename = "data/logs/instantiation_execution.json"
+    output_filename = _runtime_settings["execution_report"]
     os.makedirs(os.path.dirname(output_filename), exist_ok=True)
     with open(output_filename, "w", encoding="utf-8") as f:
         json.dump(output_data, f, ensure_ascii=False, indent=4)
 
     print(f"Processing completed. Elapsed time: {execution_duration_seconds} seconds. Report saved to {output_filename}")
 
-    filename = 'event_trees_rain_zhengzhou-all-1-sensor-en-1.pickle'
+    filename = _runtime_settings['event_trees_file']
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
     try:
         with open(filename, 'wb') as file:
             pickle.dump(event_trees, file)
         print(f"Saved data to {filename}")
     except Exception as e:
-        print(f"Save failed: {e}")
+        raise RuntimeError(f"Could not save configured event-tree file: {filename}") from e
 
-    with open("event_trees_rain_zhengzhou-all-1-sensor-en-1.pickle", "rb") as f:
+    with open(filename, "rb") as f:
         event_trees = pickle.load(f)
 
+    if strict and len(event_trees) != len(ori_events):
+        raise RuntimeError('Not every new initial event produced an inference tree; update persistence was not started.')
     neo.connect_database(ins_graph_database)
-    event_num = 0
+    event_num = event_num_start
     for event_tree in event_trees:
         try:
             ori_node = DisasterEvent.nodes.first_or_none(event_description=event_tree["event_description"],
@@ -1483,6 +1512,8 @@ def construct_instantiation_database(ori_events: list,
             event_num += 1
         except Exception as e:
             print(f"Persistence failed for {event_tree['event_description']}: {e}")
+            if strict:
+                raise RuntimeError(f"Could not persist new initial event {event_tree['event_description']!r}.") from e
     return event_trees
 
 
@@ -1675,3 +1706,6 @@ def get_factor_to_disaster():
                 factor_to_disaster[sf_name] = sf_to_disaster
 
     return factor_to_disaster
+
+
+configure_runtime(load_basin=False)

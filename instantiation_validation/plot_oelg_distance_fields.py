@@ -180,6 +180,9 @@ def load_config(path):
     fields.cutoff_for('','',maps)
     oelg_path = Path(config['oelg_config'])
     oelg = fields.read_json(oelg_path)
+    for key in ('abstract_database', 'observation_database', 'instance_database'):
+        if key in oelg:
+            oelg[key] = fields.resolve_database_name(oelg[key])
     for key in ('region',):
         oelg[key] = str((oelg_path.parent/oelg[key]).resolve())
     maps['region'] = oelg['region']
@@ -194,12 +197,16 @@ def write_csv(path, rows, columns):
         writer.writerows(rows)
 
 
-def run(config_path, output_dir=None, no_plots=False, *, oelg_override=None, only_kind=None):
+def run(config_path, output_dir=None, no_plots=False, *, oelg_override=None, only_kind=None, grid_overrides=None):
     config,maps,oelg = load_config(config_path)
     if oelg_override is not None:
         oelg = oelg_override
         maps['region'] = oelg['region']
         maps['exclude_geo_types'] = oelg.get('exclude_geo_types', [])
+    if grid_overrides is not None:
+        if not set(grid_overrides) <= {'reference_raster', 'region', 'distance_crs'}:
+            raise ValueError('Grid overrides may change only reference_raster, region and distance_crs.')
+        maps.update(grid_overrides)
     if only_kind not in (None, 'event', 'factor'):
         raise ValueError('only_kind must be event or factor')
     if output_dir:

@@ -28,6 +28,7 @@ GROUPS = (
         ('instantiate', 'Instantiate regional disaster and observation events.'),
         ('map', 'Generate event and observation-factor distance fields.'),
         ('all', 'Run instantiation followed by mapping.'),
+        ('update', 'Update and map: copy an instance graph and infer from new initial events.'),
     )),
     ('Extraction validation', 'main_extraction_validation.py', (
         ('evaluate', 'Evaluate a prepared extraction workbook.'),
@@ -36,11 +37,11 @@ GROUPS = (
         ('prepare', 'Prepare a new evaluation workbook.'),
     )),
     ('Method validation and paper reproduction', 'main_validation.py', (
-        ('reproduce', 'Replay archived experiments and verify Tables 4, 6, and 7.'),
-        ('patterns', 'Verify the archived 1,656-pattern statistics.'),
-        ('compare', 'Compare existing DOELG and OELG raster fields.'),
         ('instantiate', 'Construct the OELG baseline instance graph.'),
         ('map', 'Generate maps from the OELG instance graph.'),
+        ('compare', 'Compare two databases; reuse rasters or generate missing maps.'),
+        ('pattern', 'Summarize patterns from a logic database or verify archived pattern statistics.'),
+        ('reproduction', 'Paper reproduction from archived inputs only (paper version).'),
     )),
 )
 
@@ -106,6 +107,9 @@ def setting(path, key):
         value = json.loads(Path(path).read_text(encoding='utf-8-sig'))
         for part in key.split('.'):
             value = value[part]
+        if key.split('.')[-1].endswith('database'):
+            from src.construct_config import resolve_database_name
+            value = resolve_database_name(value)
         return str(value)
     except (OSError, ValueError, KeyError, TypeError):
         return 'script default'
@@ -113,6 +117,7 @@ def setting(path, key):
 
 def build_command(group_index, task):
     """Collect applicable parameters and build an argument list for an existing script."""
+    task = {'pattern': 'patterns', 'reproduction': 'reproduce'}.get(task, task)
     script = GROUPS[group_index][1]
     command = [sys.executable, '-u', str(ROOT / 'main' / script), '-t', task]
 
@@ -136,16 +141,31 @@ def build_command(group_index, task):
         if group_index == 0 and task in ('extract', 'all'):
             add('--input_dir', 'Input JSON directory', 'directory', setting(config, 'extraction.input_dir'))
     elif group_index == 2:
+        config = add('--config', 'Instantiation and mapping configuration', 'file', 'instantiation_config.json')
+        config = config or ROOT / 'instantiation_config.json'
+        add('--construct-config', 'Connection and model configuration', 'file', 'construct_config.json')
+        if task == 'update':
+            from src.instantiation_settings import load_update_settings
+            defaults = load_update_settings(config)
+            add('--source-database', 'Existing instance database to copy', default=defaults['source_database'])
+            add('--logic_database', 'Source logic database', default=defaults['logic_database'])
+            add('--events', 'New initial events GeoJSON', 'file', defaults['events_file'])
+            add('--ins_database', 'New update instance database', default=defaults['instance_database'])
+            add('--output-dir', 'New update output directory', default=defaults['update_output_dir'] + '/<new run>')
+            add('--no-plots', 'Skip map PNGs? y/n', 'flag', 'n')
+            return command
         if task in ('instantiate', 'all'):
-            add('--logic_database', 'Source logic database', default='events-logic-all-1zz-sensor-en-0904')
-            add('--events', 'Initial event GeoJSON', 'file', 'data/geo_dataset/events_zhengzhou/onset.geojson')
+            add('--logic_database', 'Source logic database', default=setting(config, 'instantiation.logic_database'))
+            events_default = setting(config, 'instantiation.events_file')
+            if events_default == 'script default':
+                events_default = setting(config, 'region')
+            add('--events', 'Initial event GeoJSON', 'file', events_default)
         snapshot = ''
         if task == 'map':
             snapshot = add('--snapshot', 'Offline source snapshot (optional)', 'file', 'read Neo4j')
         if not snapshot:
-            add('--ins_database', 'Instance database', default='events-ins-all-zhengzhou-test-1')
+            add('--ins_database', 'Instance database', default=setting(config, 'database'))
         if task in ('map', 'all'):
-            add('--map-config', 'Mapping configuration', 'file', 'instantiation_config.json')
             add('--output-dir', 'New map output directory')
             add('--no-plots', 'Skip map PNGs? y/n', 'flag', 'n')
     elif group_index == 3:
@@ -171,15 +191,48 @@ def build_command(group_index, task):
             add('--output' if task == 'table' else '--output-dir',
                 'Output CSV file' if task == 'table' else 'Plot output directory')
     else:
-        config_name = ('paper_experiment_config.json' if task in ('reproduce', 'patterns') else
+        if task == 'patterns':
+            source_index = choose('Validation data source', (
+                ('Local Neo4j databases', 'Read existing result graphs without modifying graph data.'),
+                ('Existing archives', 'Use frozen snapshots, pattern statistics or exported rasters.')))
+            if source_index is None:
+                return None
+            source = 'database' if source_index == 0 else 'archive'
+            command.extend(['--source', source])
+        else:
+            source = 'database' if task == 'compare' else 'archive' if task == 'reproduce' else None
+            if source:
+                command.extend(['--source', source])
+        config_name = ('database_validation_config.json' if source == 'database' else
+                       'paper_experiment_config.json' if task in ('reproduce', 'patterns') else
                        'importance_comparison_config.json' if task == 'compare' else 'oelg_config.json')
-        add('--config', 'Validation configuration', 'file', 'instantiation_validation/' + config_name)
-        if task in ('instantiate', 'map', 'reproduce'):
-            add('--output-dir', 'Output directory')
-            add('--no-plots', 'Skip maps entirely? y/n' if task == 'instantiate' else 'Skip map PNGs? y/n',
-                'flag', 'n')
-        if task in ('compare', 'reproduce'):
-            add('--overwrite', 'Replace existing comparison reports? y/n', 'flag', 'n')
+        config = add('--config', 'Validation configuration', 'file', 'instantiation_validation/' + config_name)
+        if source == 'database':
+            from instantiation_validation.validation_sources import load_database_profile
+            config = config or ROOT / 'instantiation_validation' / config_name
+            preview = load_database_profile(config)
+            connection = add('--construct-config', 'Connection configuration', 'file', preview['construct_config'])
+            defaults = load_database_profile(config, {'construct_config': connection or None})
+            if task == 'compare':
+                add('--doelg-database', 'DOELG instance database', default=defaults['doelg_database'])
+                add('--oelg-database', 'OELG instance database', default=defaults['oelg_database'])
+                add('--doelg-raster-dir', 'DOELG map root (reuse existing rasters)', default=defaults['doelg_raster_dir'])
+                add('--oelg-raster-dir', 'OELG map root (reuse existing rasters)', default=defaults['oelg_raster_dir'])
+            if task == 'patterns':
+                add('--pattern-database', 'Generalized logic database', default=defaults['pattern_database'])
+            add('--output-dir', 'New local evaluation output directory')
+            if task != 'patterns':
+                add('--no-plots', 'Skip map PNGs? y/n', 'flag', 'n')
+        else:
+            if task in ('instantiate', 'map'):
+                selected_config = config or ROOT / 'instantiation_validation' / config_name
+                add('--instance-database', 'OELG instance database', default=setting(selected_config, 'instance_database'))
+            if task in ('instantiate', 'map', 'reproduce'):
+                add('--output-dir', 'Output directory')
+                add('--no-plots', 'Skip maps entirely? y/n' if task == 'instantiate' else 'Skip map PNGs? y/n',
+                    'flag', 'n')
+            if task in ('compare', 'reproduce'):
+                add('--overwrite', 'Replace existing comparison reports? y/n', 'flag', 'n')
     return command
 
 
@@ -206,7 +259,7 @@ def execute(command, dry_run=False):
 
 def main(argv=None):
     """Show the menu without initializing models or connecting to a database."""
-    parser = argparse.ArgumentParser(description='Plain command-line launcher for KGC_main.')
+    parser = argparse.ArgumentParser(description='Plain command-line launcher for DOELG_main.')
     parser.add_argument('--dry-run', action='store_true', help='Preview menu commands without executing tasks')
     args = parser.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
@@ -215,12 +268,22 @@ def main(argv=None):
     print('DOELG - Disaster Observation Event Logic Graph Construction and Application')
     print('Extract knowledge, generalize event logic, instantiate events, and evaluate results.')
     print('Live graph tasks use Neo4j and the configured model/geocoding services.')
-    print('Paper reproduction and archived pattern checks run offline.')
-    print('Parameters apply to this run only. Configuration files are not edited.')
+    print('5.1 instantiates OELG; 5.3 compares methods; 5.4 summarizes patterns; 5.5 replays paper archives.')
+    print('Write tasks create missing target databases in the configured Neo4j instance. {date} means YYYYMMDD in Shanghai.')
+    print('Service settings are configured first; task parameter choices apply to this run only.')
     print(f'Project: {ROOT}\nPython: {sys.executable}')
-    print('Use the KGC conda environment. Select 0 to return or exit; Ctrl+C cancels a task.')
+    print('The menu uses the Python interpreter shown above. Select 0 to return or exit; Ctrl+C cancels a task.')
     if args.dry_run:
-        print('PREVIEW MODE: commands will not execute.')
+        print('PREVIEW MODE: commands will not execute; service settings will not be saved.')
+    try:
+        from src.startup_configuration import configure_services
+        configure_services(ROOT / 'construct_config.json', persist=not args.dry_run)
+    except (EOFError, KeyboardInterrupt):
+        print('\nService configuration cancelled. No task was started.')
+        return 130
+    except (OSError, ValueError) as error:
+        print(f'Service configuration failed: {error}')
+        return 1
     while True:
         try:
             group = choose('Main menu', tuple((name, '') for name, _, _ in GROUPS))
@@ -231,7 +294,7 @@ def main(argv=None):
                 continue
             task, description = GROUPS[group][2][task_index]
             print(f'\n{task}: {description}')
-            if group in (0, 1) or (group in (2, 4) and task in ('instantiate', 'all')):
+            if group in (0, 1) or (group in (2, 4) and task in ('instantiate', 'all', 'update')):
                 print('This task writes graph data to its selected Neo4j database.'
                       if not (group == 1 and task == 'stats') else 'This task reads Neo4j and exports statistics.')
             command = build_command(group, task)

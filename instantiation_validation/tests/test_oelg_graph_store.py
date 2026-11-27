@@ -1,8 +1,9 @@
 from types import SimpleNamespace
 import unittest
+from unittest.mock import MagicMock
 from shapely.geometry import box
 from shapely import wkt
-from oelg_graph_store import prepare_rows, read_graph, write_builder
+from oelg_graph_store import prepare_rows, read_graph, write_builder, resolve_snapshot
 
 
 class GraphStoreTests(unittest.TestCase):
@@ -49,6 +50,44 @@ class GraphStoreTests(unittest.TestCase):
             driver=SimpleNamespace(session=lambda **kw:Session(record))
             with self.assertRaisesRegex(ValueError,'No complete OELG graph snapshot'):
                 read_graph(driver,'oelg','snapshot')
+
+    def test_automatic_snapshot_uses_latest_complete_current_schema_result(self):
+        driver = MagicMock()
+        session = driver.session.return_value.__enter__.return_value
+        tx = MagicMock()
+        tx.run.return_value.single.return_value = {'s': dict(name='completed-with-suffix', status='complete',
+            schema_version=2, event_count=20, feature_count=200)}
+        session.execute_read.side_effect = lambda callback: callback(tx)
+        self.assertEqual(resolve_snapshot(driver, 'selected-instance-db'), 'completed-with-suffix')
+        driver.session.assert_called_once_with(database='selected-instance-db', default_access_mode='READ')
+        self.assertIsNone(tx.run.call_args.kwargs['snapshot'])
+        self.assertEqual(tx.run.call_args.kwargs['schema'], 2)
+        self.assertIn('s.completed_at', tx.run.call_args.args[0])
+        self.assertIn('DESC', tx.run.call_args.args[0])
+        session.execute_write.assert_not_called()
+
+    def test_no_usable_result_identifies_database_and_required_task(self):
+        for meta in (None, {'s': {}}, {'s': dict(name='old', status='complete', schema_version=1,
+                     event_count=10, feature_count=20)}, {'s': dict(name='empty', status='complete',
+                     schema_version=2, event_count=0, feature_count=20)}):
+            driver = MagicMock()
+            session = driver.session.return_value.__enter__.return_value
+            tx = MagicMock()
+            tx.run.return_value.single.return_value = meta
+            session.execute_read.side_effect = lambda callback: callback(tx)
+            with self.subTest(meta=meta), self.assertRaisesRegex(ValueError, "selected-instance-db.*5.1"):
+                resolve_snapshot(driver, 'selected-instance-db')
+
+    def test_explicit_advanced_name_is_validated_without_falling_back(self):
+        driver = MagicMock()
+        session = driver.session.return_value.__enter__.return_value
+        tx = MagicMock()
+        tx.run.return_value.single.return_value = None
+        session.execute_read.side_effect = lambda callback: callback(tx)
+        with self.assertRaisesRegex(ValueError, 'missing-explicit-result'):
+            resolve_snapshot(driver, 'selected-instance-db', 'missing-explicit-result')
+        self.assertEqual(tx.run.call_args.kwargs['snapshot'], 'missing-explicit-result')
+        tx.run.assert_called_once()
 
 
 if __name__=='__main__':

@@ -11,8 +11,9 @@ sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.join(project_root, 'src'))
 
 from src.construct_config import (
-    configure_from_cli, get_config_path, get_configured_path, get_setting, resolve_project_path
+    configure_from_cli, get_config_path, get_configured_path, get_setting, resolve_project_path, resolve_database_name
 )
+from src.neo4j_database import ensure_database
 from src.graph_language import english_disaster, english_observation, english_term
 from src.other.causal_relation_rules import classify_event_cause, enforce_existing_causal_rules
 
@@ -926,11 +927,13 @@ def main():
     )
 
     args = parser.parse_args()
+    args.database = resolve_database_name(args.database)
     args.input_dir = str(resolve_project_path(args.input_dir))
     overall_start = time.time()
 
     print(f"Connecting to Neo4j database: {args.database}...")
     try:
+        ensure_database(args.database)
         neo_connector = Neo4jDatabaseConnector(args.database)
     except Exception as e:
         print(f"Failed to connect to database '{args.database}'. Error: {e}")

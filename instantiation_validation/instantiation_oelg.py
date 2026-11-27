@@ -25,6 +25,8 @@ from shapely import make_valid
 from shapely.geometry import shape, mapping, Polygon, GeometryCollection
 from shapely.ops import transform, unary_union
 from shapely.prepared import prep
+from src.construct_config import resolve_database_name
+from src.neo4j_database import ensure_database
 from standard_observation_factors import STANDARD_FACTORS, canonical_factors
 from oelg_environment import (MissingEnvironmentData, evaluate_spatial_rule,
                               validate_environment_rule, number)
@@ -968,6 +970,8 @@ def load_config(path):
     path = Path(path).resolve()
     config = read_json(path)
     base = path.parent
+    for key in ('abstract_database', 'observation_database', 'instance_database'):
+        config[key] = resolve_database_name(config[key])
     for key in ('rainfall', 'region', 'features_folder', 'output_folder', 'knowledge_json', 'doelg_rasters',
                 'risk_basemap', 'risk_maps_folder', 'factor_maps_folder'):
         if config.get(key):
@@ -1362,6 +1366,7 @@ def prepare_run_destination(config, repository):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--instance-database', help='Override the OELG instance database; {date} uses the Shanghai calendar')
     parser.add_argument('--config', default=str(Path(__file__).with_name('oelg_config.json')))
     parser.add_argument('--write-database', action='store_true', help='兼容旧命令；现在默认写入 Neo4j')
     parser.add_argument('--no-plots', action='store_true', help='只完成实例入库与审计导出')
@@ -1375,6 +1380,8 @@ def main(argv=None):
     map_options.add_argument('--rasters-only', action='store_true', help='从 Neo4j 导出距离衰减 GeoTIFF，不生成 PNG')
     args = parser.parse_args(argv)
     config = load_config(args.config)
+    if args.instance_database:
+        config['instance_database'] = resolve_database_name(args.instance_database)
     if args.output_folder:
         config['output_folder'] = str(args.output_folder.resolve())
 
@@ -1395,6 +1402,9 @@ def main(argv=None):
     started = time.perf_counter()
     repository = OELGKnowledgeRepository(config['abstract_database'])
     try:
+        if config['instance_database'].casefold() in {config['abstract_database'].casefold(), config['observation_database'].casefold()}:
+            raise ValueError('Instance database must differ from both knowledge databases.')
+        ensure_database(config['instance_database'], driver=repository.driver)
         config = prepare_run_destination(config, repository)
         folder = Path(config['output_folder'])
         print(f'Instance snapshot: {config["snapshot"]}\nAudit output directory: {folder}', flush=True)

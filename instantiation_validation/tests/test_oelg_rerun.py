@@ -85,12 +85,14 @@ class RepeatRunTests(unittest.TestCase):
         with (patch.object(sys, 'argv', ['instantiation_oelg.py', '--config', str(self.root/'config.json')]),
               patch.object(module, 'load_config', return_value=self.config),
               patch.object(module, 'OELGKnowledgeRepository', return_value=self.repository),
+              patch.object(module, 'ensure_database') as ensure,
               patch.object(module, 'load_instantiation_knowledge', return_value=graph),
               patch.object(module, 'OELGInstantiationBuilder', side_effect=create_builder),
               patch.object(module, 'save_instance_database', return_value={'event_count': 1}) as write,
               patch.object(module, 'run_suffix', side_effect=['new-audit', 'new-map']),
               patch.dict(sys.modules, {'plot_oelg_distance_fields': SimpleNamespace(run=plot)})):
             module.main()
+        ensure.assert_called_once_with('instances', driver=self.repository.driver)
         self.assertEqual(builder.config['snapshot'], 'original-new-audit')
         self.assertEqual(Path(builder.config['output_folder']), self.root/'audit-new-audit')
         write.assert_called_once_with(self.repository, builder, 'instances')

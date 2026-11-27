@@ -35,6 +35,7 @@ from shapely.geometry import shape, mapping, box
 from shapely.ops import transform, unary_union
 
 from standard_observation_factors import factor_key
+from src.construct_config import resolve_database_name
 
 # Keep the OF numbering used by instantiation.py and the manuscript figure.
 OBSERVATION_FACTOR_LABELS = {
@@ -940,7 +941,7 @@ def export_fields(event_fields,factor_fields,grid,config,out):
     return rows
 
 
-def run(config_path, snapshot_path=None, output_dir=None, no_plots=False, database=None):
+def run(config_path, snapshot_path=None, output_dir=None, no_plots=False, database=None, *, grid_overrides=None):
     config_path = Path(config_path).resolve()
     config = read_json(config_path)
     if database:
@@ -948,10 +949,15 @@ def run(config_path, snapshot_path=None, output_dir=None, no_plots=False, databa
     for key in ('source_module','connection_module','features_folder','region','reference_raster','basemap','output_dir','geo_type_dictionary'):
         if config.get(key):
             config[key] = str((config_path.parent/config[key]).resolve())
+    if grid_overrides is not None:
+        if not set(grid_overrides) <= {'reference_raster', 'region', 'distance_crs'}:
+            raise ValueError('Unsupported comparison grid override.')
+        config.update(grid_overrides)
     if output_dir:
         config['output_dir'] = str(Path(output_dir).resolve())
     if not config.get('database'):
         config['database'] = literal_setting(config['source_module'],'ins_graph_database')
+    config['database'] = resolve_database_name(config['database'])
     if config.get('event_hazard_weights') is None:
         config['event_hazard_weights'] = literal_setting(config['source_module'],'DISASTER_PHENOMENON_HAZARD_WEIGHTS')
     if not config.get('apply_geo_type_importance',True):

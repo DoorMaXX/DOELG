@@ -1,7 +1,52 @@
 {
   "source_module": "src/instantiation.py",
   "connection_module": "ontology/neo4jmodel.py",
-  "database": "events-ins-all-zhengzhou-test-1",
+  "database": "DOELG-instance-{date}",
+  "instantiation": {
+    "logic_database": "DOELG-abstract",
+    "workers": 10,
+    "max_depth": 2,
+    "study_area": [
+      113.549609,
+      34.702835,
+      113.657406,
+      34.79141
+    ],
+    "elevation": 120.0,
+    "ori_importance": 120.0,
+    "importance_punish": 30.0,
+    "i_fac": 1.0,
+    "confidence_to_probability_scale": 7.0,
+    "min_secondary_confidence": 0.0,
+    "distance_levels": [
+      0,
+      10,
+      100,
+      1000,
+      5000,
+      10000
+    ],
+    "distance_importance": [
+      100,
+      80,
+      60,
+      40,
+      20,
+      5
+    ],
+    "max_distance_mapping": {
+      "Very Close": 10,
+      "Close": 100,
+      "Medium": 1000,
+      "Far": 5000,
+      "Very Far": 10000
+    },
+    "basin_file": "data/geo_dataset/basin/henan_basin-2.shp",
+    "geos_output_folder": "data/output/zhengzhou_frame_1",
+    "event_trees_file": "event_trees_rain_zhengzhou-all-1-sensor-en-1.pickle",
+    "execution_report": "data/logs/instantiation_execution.json",
+    "events_file": "data/geo_dataset/events_zhengzhou/onset.geojson"
+  },
   "features_folder": "data/geo_dataset/geos_zhengzhou",
   "region": "data/geo_dataset/events_zhengzhou/onset.geojson",
   "reference_raster": null,
@@ -80,5 +125,12 @@
   "show_title": false,
   "show_colorbar": false,
   "show_scale_bar": false,
-  "render_png": true
+  "render_png": true,
+  "update": {
+    "source_database": null,
+    "instance_database": "DOELG-instance-{date}-update",
+    "events_file": "data/geo_dataset/events_zhengzhou/update.geojson",
+    "output_dir": "data/ins_figures/updates",
+    "batch_size": 500
+  }
 }

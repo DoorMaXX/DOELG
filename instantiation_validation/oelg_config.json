@@ -1,7 +1,7 @@
 {
-  "abstract_database": "oelg-1",
-  "observation_database": "events-logic-all-1zz-sensor-en-0904",
-  "instance_database": "oelg-ins-zhengzhou-0720-1",
+  "abstract_database": "oelg-abstract",
+  "observation_database": "doelg-abstract",
+  "instance_database": "OELG-instance-{date}",
   "dataset": "predefined_causal_temporal_v1",
   "snapshot": "zhengzhou-rain-20210720-1400-oelg-env-v1",
   "snapshot_time": "2021-07-20T14:00:00+08:00",
